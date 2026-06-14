@@ -8,20 +8,19 @@ import { ref, watch, computed, onUnmounted } from 'vue';
 import { SlotSymbol } from '@casino/shared';
 
 interface SymbolMeta {
-  text: string;
+  img: string;
   color: string;
-  isText: boolean;
 }
 
 const SYMBOL_META: Record<SlotSymbol, SymbolMeta> = {
-  [SlotSymbol.CHERRY]:  { text: '🍒', color: '#e74c3c', isText: false },
-  [SlotSymbol.LEMON]:   { text: '🍋', color: '#f1c40f', isText: false },
-  [SlotSymbol.BELL]:    { text: '🔔', color: '#f39c12', isText: false },
-  [SlotSymbol.BAR]:     { text: 'BAR', color: '#3498db', isText: true },
-  [SlotSymbol.CLOVER]:  { text: '🍀', color: '#27ae60', isText: false },
-  [SlotSymbol.LUCKY7]:  { text: '7',   color: '#9b59b6', isText: true },
-  [SlotSymbol.DIAMOND]: { text: '💎', color: '#00bcd4', isText: false },
-  [SlotSymbol.WILD]:    { text: '⭐', color: '#ffd700', isText: false },
+  [SlotSymbol.CHERRY]:  { img: '/symbols/cherry.png',  color: '#e74c3c' },
+  [SlotSymbol.LEMON]:   { img: '/symbols/lemon.png',   color: '#f1c40f' },
+  [SlotSymbol.BELL]:    { img: '/symbols/bell.png',    color: '#f39c12' },
+  [SlotSymbol.BAR]:     { img: '/symbols/bar.png',     color: '#3498db' },
+  [SlotSymbol.CLOVER]:  { img: '/symbols/clover.png',  color: '#27ae60' },
+  [SlotSymbol.LUCKY7]:  { img: '/symbols/lucky7.png',  color: '#9b59b6' },
+  [SlotSymbol.DIAMOND]: { img: '/symbols/diamond.png', color: '#00bcd4' },
+  [SlotSymbol.WILD]:    { img: '/symbols/wild.png',    color: '#ffd700' },
 };
 
 const ALL_SYMBOLS = Object.values(SlotSymbol);
@@ -109,11 +108,13 @@ const isActive = computed(() => props.isSpinning || isDecelerating.value);
 <template>
   <div class="reel-column" :class="{ active: isActive }">
     <div class="reel-window">
-      <span
+      <img
         class="symbol"
-        :class="{ 'is-text': meta.isText, blurring: isActive }"
-        :style="{ color: meta.color }"
-      >{{ meta.text }}</span>
+        :class="{ blurring: isActive }"
+        :src="meta.img"
+        :alt="displaySymbol"
+        draggable="false"
+      />
     </div>
     <div class="symbol-label">{{ displaySymbol }}</div>
   </div>
@@ -147,16 +148,12 @@ const isActive = computed(() => props.isSpinning || isDecelerating.value);
 }
 
 .symbol {
-  font-size: 3.2rem;
-  line-height: 1;
+  width: 80px;
+  height: 80px;
+  object-fit: contain;
   user-select: none;
   transition: filter 0.06s ease;
-}
 
-.symbol.is-text {
-  font-size: 2rem;
-  font-weight: 900;
-  letter-spacing: 0.05em;
 }
 
 .symbol.blurring {

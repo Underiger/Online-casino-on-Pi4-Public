@@ -51,6 +51,17 @@ const jackpotPool = computed(() => slotStore.jackpotPool);
 // ── 按鈕禁用條件 ──
 const spinDisabled = computed(() => isAnimating.value || slotStore.isSpinning);
 
+// ── 拉桿動畫 ──
+const leverDown = ref(false);
+
+async function handleLeverPull(): Promise<void> {
+  if (spinDisabled.value) return;
+  leverDown.value = true;
+  await new Promise<void>(r => setTimeout(r, 280));
+  leverDown.value = false;
+  await handleSpin();
+}
+
 // ── 格式化 ──
 function formatCoin(val: string | null): string {
   if (val === null) return '—';
@@ -205,52 +216,41 @@ onUnmounted(() => {
     </Transition>
 
     <main class="main">
-      <!-- ─── 滾輪區域 ──────────────────────────────────── -->
-      <section class="reels-section" aria-label="老虎機滾輪">
-        <!-- Win 遮罩 -->
-        <Transition name="win">
-          <div v-if="showWinOverlay" class="win-overlay">
-            <span class="win-label">WIN!</span>
-            <span class="win-amount">+{{ lastWin.toLocaleString() }}</span>
-            <span class="win-unit">Coin</span>
-          </div>
-        </Transition>
+      <!-- ─── 機台 + 滾輪 ──────────────────────────────────── -->
+      <section class="machine-wrapper" aria-label="老虎機">
+        <img
+          class="machine-cabinet"
+          :src="leverDown ? '/symbols/slot-down.png' : '/symbols/slot-up.png'"
+          alt=""
+          draggable="false"
+        />
 
-        <!-- 保底提示徽章 -->
-        <Transition name="fade">
-          <div v-if="pendingResult?.pityActive === true && !isAnimating" class="pity-badge">
-            🎯 保底生效
-          </div>
-        </Transition>
-
-        <div class="reels">
-          <ReelColumn
-            :final-symbol="finalSymbols[0]"
-            :is-spinning="reelSpinning[0]"
-            :duration="900"
-            @spin-end="onReelSpinEnd"
-          />
-          <div class="reel-separator" />
-          <ReelColumn
-            :final-symbol="finalSymbols[1]"
-            :is-spinning="reelSpinning[1]"
-            :duration="900"
-            @spin-end="onReelSpinEnd"
-          />
-          <div class="reel-separator" />
-          <ReelColumn
-            :final-symbol="finalSymbols[2]"
-            :is-spinning="reelSpinning[2]"
-            :duration="900"
-            @spin-end="onReelSpinEnd"
-          />
+        <!-- 滾輪嵌入機台視窗 -->
+        <div class="reels-inner">
+          <Transition name="win">
+            <div v-if="showWinOverlay" class="win-overlay">
+              <span class="win-label">WIN!</span>
+              <span class="win-amount">+{{ lastWin.toLocaleString() }}</span>
+              <span class="win-unit">Coin</span>
+            </div>
+          </Transition>
+          <ReelColumn :final-symbol="finalSymbols[0]" :is-spinning="reelSpinning[0]" :duration="900" @spin-end="onReelSpinEnd" />
+          <ReelColumn :final-symbol="finalSymbols[1]" :is-spinning="reelSpinning[1]" :duration="900" @spin-end="onReelSpinEnd" />
+          <ReelColumn :final-symbol="finalSymbols[2]" :is-spinning="reelSpinning[2]" :duration="900" @spin-end="onReelSpinEnd" />
         </div>
 
-        <!-- 中線指示 -->
-        <div class="payline" aria-hidden="true" />
+        <!-- 拉桿點擊區 -->
+        <button class="lever-btn" :disabled="spinDisabled" aria-label="拉桿旋轉" @click="handleLeverPull" />
       </section>
 
-      <!-- ─── 注額 + 旋轉控制 ────────────────────────────── -->
+      <!-- 保底提示徽章 -->
+      <Transition name="fade">
+        <div v-if="pendingResult?.pityActive === true && !isAnimating" class="pity-badge">
+          🎯 保底生效
+        </div>
+      </Transition>
+
+      <!-- ─── 注額控制 ────────────────────────────── -->
       <section class="controls" aria-label="旋轉控制">
         <div class="bet-row">
           <span class="bet-label">注額</span>
@@ -268,17 +268,6 @@ onUnmounted(() => {
             </button>
           </div>
         </div>
-
-        <button
-          class="spin-btn"
-          :class="{ spinning: isAnimating }"
-          :disabled="spinDisabled"
-          aria-label="旋轉"
-          @click="handleSpin"
-        >
-          <span v-if="isAnimating" class="spin-icon">⏳</span>
-          <span v-else>旋轉！</span>
-        </button>
       </section>
 
       <!-- ─── 底部工具列 ─────────────────────────────────── -->
@@ -401,53 +390,86 @@ onUnmounted(() => {
   align-items: center;
   gap: 1.5rem;
   padding: 1.5rem 1rem 2rem;
-  max-width: 560px;
+  max-width: 840px;
   width: 100%;
   margin: 0 auto;
 }
 
-/* ── Reels ── */
-.reels-section {
+/* ── Machine Cabinet ── */
+.machine-wrapper {
   position: relative;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0;
+  width: min(780px, 98vw);
+  max-width: 100%;
+}
+
+.machine-cabinet {
   width: 100%;
-}
-
-.reels {
-  display: flex;
-  align-items: center;
-  gap: 0;
-  padding: 1.5rem 1.5rem;
-  background: rgba(0, 0, 0, 0.45);
-  border: 1px solid rgba(255, 215, 0, 0.2);
-  border-radius: 16px;
-  position: relative;
-}
-
-.reel-separator {
-  width: 12px;
-}
-
-/* 中獎連線指示橫條 */
-.payline {
-  position: absolute;
-  left: 1.5rem;
-  right: 1.5rem;
-  top: 50%;
-  height: 2px;
-  background: linear-gradient(90deg, transparent, rgba(255, 215, 0, 0.5), transparent);
+  display: block;
   pointer-events: none;
-  margin-top: -1px;
+  user-select: none;
+}
+
+/* 滾輪嵌入機台視窗（百分比根據圖片位置調整） */
+.reels-inner {
+  position: absolute;
+  left: 29%;
+  top: 36%;
+  width: 43%;
+  height: 22%;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  gap: 0;
+  overflow: hidden;
+}
+
+/* 滾輪符號縮小以配合機台視窗 */
+.reels-inner :deep(.reel-column) {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  gap: 0;
+}
+
+.reels-inner :deep(.reel-window) {
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: transparent;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.reels-inner :deep(.symbol) {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.reels-inner :deep(.symbol-label) {
+  display: none;
+}
+
+/* 拉桿點擊區（透明，疊在機台圖的拉桿位置） */
+.lever-btn {
+  position: absolute;
+  right: 0;
+  top: 30%;
+  width: 18%;
+  height: 44%;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.lever-btn:disabled {
+  cursor: not-allowed;
 }
 
 /* ── Win Overlay ── */
 .win-overlay {
   position: absolute;
   inset: 0;
-  border-radius: 16px;
   background: rgba(0, 0, 0, 0.6);
   display: flex;
   flex-direction: column;
@@ -554,34 +576,6 @@ onUnmounted(() => {
   cursor: not-allowed;
 }
 
-.spin-btn {
-  width: 100%;
-  max-width: 280px;
-  padding: 0.85rem 0;
-  border-radius: 12px;
-  border: none;
-  background: linear-gradient(135deg, #f39c12, #e74c3c);
-  color: #fff;
-  font-size: 1.15rem;
-  font-weight: 800;
-  letter-spacing: 0.06em;
-  cursor: pointer;
-  transition: opacity 0.2s, transform 0.15s;
-  box-shadow: 0 4px 18px rgba(243, 156, 18, 0.35);
-}
-
-.spin-btn:hover:not(:disabled) { transform: translateY(-1px); }
-.spin-btn:active:not(:disabled) { transform: translateY(0); }
-
-.spin-btn:disabled,
-.spin-btn.spinning {
-  opacity: 0.55;
-  cursor: not-allowed;
-  transform: none;
-  background: linear-gradient(135deg, #7f8c8d, #636e72);
-}
-
-.spin-icon { font-size: 1rem; }
 
 /* ── Bottom Bar ── */
 .bottom-bar {

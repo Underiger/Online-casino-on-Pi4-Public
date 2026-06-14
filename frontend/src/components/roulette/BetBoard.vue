@@ -98,7 +98,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, h } from 'vue';
 import { RouletteBetType } from '@casino/shared';
 import type { PersonalBet } from '../../stores/roulette';
 
@@ -106,7 +106,9 @@ import type { PersonalBet } from '../../stores/roulette';
 
 const BetBadge = {
   props: { amount: Number },
-  template: `<span v-if="amount > 0" class="bet-badge">{{ amount }}</span>`,
+  setup(props: { amount?: number }) {
+    return () => (props.amount ?? 0) > 0 ? h('span', { class: 'bet-badge' }, props.amount) : null;
+  },
 };
 
 // ─── Constants ────────────────────────────────────────────────────────────
