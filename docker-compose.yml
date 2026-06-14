@@ -1,0 +1,46 @@
+# 開發用 docker-compose：PostgreSQL 16 + Redis 7
+# 使用方式：
+#   cp .env.example .env（填入 POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB）
+#   docker compose up -d
+# 生產用（Pi 4 / arm64）另見 docker-compose.arm64.yml（M25 建立）
+name: virtual-casino-sandbox
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: casino-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-casino}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
+      POSTGRES_DB: ${POSTGRES_DB:-casino_dev}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-casino} -d ${POSTGRES_DB:-casino_dev}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    container_name: casino-redis
+    restart: unless-stopped
+    # AOF 持久化：Jackpot 累積值、HMAC 會話金鑰等不可因重啟全失
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:
+  redisdata:

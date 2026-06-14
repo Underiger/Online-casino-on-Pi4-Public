@@ -1,0 +1,192 @@
+你是一位資深全端工程師、多人遊戲伺服器架構師與獨立遊戲設計師。請協助我從零開始開發一款可部署在 Raspberry Pi 4 4GB 上的多人線上虛擬娛樂平台（Virtual Casino Sandbox）。
+
+## 專案目標
+
+* 平台僅使用虛擬遊戲幣，不涉及任何真實金錢、儲值、提領或兌換功能。
+* 所有虛擬幣僅供遊戲娛樂使用，不具現實價值。
+* 第一版（MVP）只實作兩個遊戲：
+
+  1. Roguelite 老虎機（靈感來自 CloverPit 與 Balatro 的 Build 構築玩法）。
+  2. Roulette（歐式輪盤，單零）。
+* 系統必須支援多人同時在線、聊天室、排行榜與管理後台。
+
+## 技術架構要求
+
+* 後端：Node.js + TypeScript。
+* 多人同步：Socket.IO（WebSocket）。
+* 資料庫：PostgreSQL（開發時可用 SQLite，之後容易遷移）。使用 Prisma Migrate 管理 schema 版本，開發與生產環境統一透過 migration 更新。
+* 前端：Vue 3 + Vite。
+* ORM：Prisma。
+* 認證：JWT + Refresh Token。
+* 部署：Docker + Docker Compose，可直接部署於 Raspberry Pi 4 4GB。
+* 快取與會話管理：Redis（可選，但架構預留介面）。
+* 非即時任務：Bull 或類似佇列（用於排行榜更新、每日任務結算）。
+* 所有服務皆需提供 README 與部署腳本。
+* 環境變數統一使用 .env 檔案管理，並提供 .env.example 範本，敏感資料禁止提交至版本控制。
+
+完成下面三個文件，再開始實作：
+
+《Game Design Document（GDD）》
+《Technical Design Document（TDD）》
+《資料庫 ER Diagram 與 API 規格書》
+## 開發方式
+
+請勿一次產生完整專案程式碼，也不要一次建立所有檔案。請依照里程碑（Milestone）逐步開發，每次只完成當前階段所需內容，並等待我的確認後再繼續。
+
+請不要一次產生整個專案，而是：
+
+1. 先分析需求。
+2. 規劃完整資料夾結構。
+3. 設計資料庫 Schema。
+4. 設計 API 與 Socket.IO 事件列表。
+5. 建立最小可運行 MVP。
+6. 再逐步新增功能，每次修改都維持專案可編譯、可執行。
+
+請先將整個專案拆分成 20~30 個 Milestone，並列出依賴關係。每完成一個 Milestone，都要：
+
+1. 說明已完成內容。
+2. 列出新增／修改的檔案。
+3. 說明下一個 Milestone 的目標。
+4. 更新目前進度（例如：4/25）。
+5. 等待我的確認，不要自動繼續。
+
+每次完成一個 Milestone，都要同步更新 PROJECT_STATE.md，內容包含：目前已完成功能、待辦事項（TODO）、資料庫版本、API 狀態、已知 Bug 與下一步建議。未來所有開發都應先閱讀此檔案再繼續。
+
+請以 Git 專案的方式思考，每次修改都提供建議 Commit Message，並盡量將修改限制在少數相關檔案，避免無關的大範圍重寫。
+
+## 老虎機設計（核心玩法）
+
+這不是傳統水果盤，而是一款 Roguelite Build 構築老虎機。
+
+### 基本規則
+
+* 每次旋轉消耗虛擬幣。
+* 三輪轉軸，每軸可包含 8~12 種符號。
+* 基本符號包括：Cherry、Lemon、Bell、Bar、Lucky7、Clover、Diamond、Wild。
+* 後端負責決定轉軸結果，前端只播放動畫。
+* 所有 RNG 都在 Server 計算。
+
+### Roguelite 系統
+
+玩家可永久或暫時取得各種 Charms（護符），改變老虎機規則。所有護符效果應在伺服器端預先計算加權隨機表，並可緩存，不得即時逐符號修改機率導致效能問題。例如：
+
+* 四葉草出現率 +30%。
+* Wild 可代替任何圖示。
+* 每次轉出兩個 Lucky7，第三個轉軸 Lucky7 機率增加。
+* 每連續未中獎 10 次，下一次保底提高倍率。
+* Diamond 中獎時額外獲得 Jackpot 點數。
+
+玩家可以收集、裝備與搭配護符，形成不同 Build。
+
+### 全服 Jackpot
+
+* 每次下注的 1% 進入全服 Jackpot。獎金累積與觸發判斷應使用 Redis 原子操作，每 N 筆交易或每 10 秒批量寫入 PostgreSQL。
+* 玩家有低機率進入 Jackpot 模式。
+* 觸發時全服聊天室公告。
+* Jackpot 中獎者獲得大部分彩金，其餘部分保留累積。
+* 中獎邏輯需使用資料庫樂觀鎖（version column）避免競爭條件。
+* Jackpot 相關資料需永久保存於資料庫。
+
+### 每日與社交系統
+
+* 每日登入獎勵。
+* 每日任務。
+* 今日幸運符號（每天隨機指定一種圖示提高收益）。
+* 全球排行榜（今日、本週、總資產）。排行榜使用物化視圖（MATERIALIZED VIEW）每 5 分鐘更新。
+* 即時聊天室。訊息需過濾 URL、限制長度與發送頻率（同 Rate Limit），避免釣魚攻擊或洗頻。
+* 玩家個人資料頁與成就系統。
+
+## Roulette 設計
+
+* 使用歐式 Roulette（0~36）。
+* 支援下注類型：
+
+  * 單號。
+  * 紅／黑。
+  * 奇／偶。
+  * 大／小（1-18 / 19-36）。
+  * Column。
+  * Dozen。
+  * Split、Street、Corner（可後續擴充）。
+* 後端產生結果並同步所有玩家。
+* 支援多人同場觀看，每位玩家下注互不影響。
+* 可建立「公共 Roulette 房」，所有人共用同一輪結果。
+* 每局結束後於聊天室顯示開獎號碼與熱門下注統計。
+
+## 管理後台（Admin Panel）
+
+建立獨立管理介面，包含：
+
+* 玩家查詢。
+* 玩家封鎖與解除封鎖。
+* 手動增加／扣除虛擬幣（需搭配雙因子認證 2FA）。
+* 建立虛擬幣兌換碼（Gift Code）。Gift Code 必須有時效性、單次使用、長度足夠隨機（≥16 字元），防止暴力枚舉。
+* 查看登入紀錄、下注紀錄、交易紀錄。
+* 查看線上人數、活躍房間與 Raspberry Pi 資源使用狀況（掛載 host /proc 或使用 systeminformation）。
+* 管理公告與活動。
+
+## 反作弊（非常重要）
+
+整個專案必須採用 Server Authoritative 架構：
+
+* Client 永遠不能決定任何遊戲結果。
+* Client 只能送出下注請求。
+* Server 驗證餘額、扣款、計算 RNG、更新資料庫後才回傳結果。
+* 所有重要操作使用資料庫 Transaction。
+
+需要實作：
+
+* JWT 驗證。
+* Rate Limit。
+* Replay Attack 防護：每個客戶端請求須攜帶 Sequence Number 與時間戳記（±5 秒有效窗），伺服器記錄 last_seq，拒絕舊封包。
+* 異常下注行為偵測。
+* 非法封包紀錄。
+* 下注與交易日誌。
+* 管理員操作日誌（Audit Log）。
+* 基本反修改客戶端設計（所有權威資料皆以 Server 為準）。
+* 所有下注請求必須在回合開啟後的特定有效時間內（例如 15 秒），超時拒絕。
+* 傳輸加密：所有客戶端與伺服器通訊必須強制使用 TLS 1.2+（HTTPS 與 WSS），禁止明文 HTTP/WS。
+* 請求簽章：客戶端對每個請求使用 HMAC-SHA256 計算簽章，簽章必須涵蓋 userId + gameType + betAmount + nonce + timestamp，防止欄位被分開篡改。登入成功後，伺服器產生隨機 HMAC 金鑰（32 位元組），透過 TLS 傳送給客戶端，並在伺服器端以 Redis 或 JWT 關聯該金鑰；伺服器驗證每次請求的簽章一致性。會話期間應定期（例如每 24 小時或登出時）輪換 HMAC 金鑰，或在 JWT Refresh 時一併更新。
+* 所有遊戲結果必須使用 Node.js 內建 crypto.randomBytes() 或 WebCrypto API，禁止使用 Math.random() 或其他非密碼學安全的 PRNG。
+* 所有扣款操作必須使用條件更新：UPDATE users SET balance = balance - :amount WHERE id = :userId AND balance >= :amount，並檢查受影響行數；若為 0 則拒絕交易。使用資料庫交易隔離層級（建議 READ COMMITTED 配合樂觀鎖，避免 SERIALIZABLE 的效能開銷；高風險操作可視情況升級至 SERIALIZABLE）確保一致性。
+
+## DDoS 基礎防護
+
+由於 Raspberry Pi 4 資源有限，為防止低頻 DDoS 或惡意 IP 耗盡連線資源，須實作以下輕量防護：
+
+* **Nginx 速率與連線限制**（若使用 Nginx 作為反向代理）：
+  - 限制單一 IP 的並發連線數 ≤ 10。
+  - 限制單一 IP 的請求速率 ≤ 10 req/s，突發上限 20。
+  - WebSocket 路徑（`/socket.io/`）單一 IP 連線數 ≤ 5。
+* **Linux SYN Cookies**：開啟 `net.ipv4.tcp_syncookies = 1`，防止 SYN Flood 攻擊。
+* **Cloudflare（可選，推薦）**：若使用網域，可將 DNS 指向 Cloudflare 免費方案，獲得全球 DDoS 清洗能力。非強制，但能在不修改程式碼的情況下顯著提升可用性。
+
+## Raspberry Pi 4 4GB 資源最佳化指引
+
+* PostgreSQL 設定 `shared_buffers=256MB`、`effective_cache_size=512MB`。
+* Node.js 啟用 cluster 模式最多 2 個 worker。
+* Socket.IO 使用 polling + websocket，限制最大連線數 200。
+* 每日任務、排行榜更新等排程作業應分散於離峰時段（若需即時則使用佇列）。
+* 提供 `docker-compose.arm64.yml` 確保所有映像檔支援 arm64。
+
+## 專案品質要求
+
+* 使用乾淨的模組化架構。
+* 每個模組加入註解與文件。
+* 保持可維護性，避免產生超大單一檔案。
+* 若需要新增檔案，請明確列出檔名與完整內容。
+* 每次修改程式碼時，說明修改原因與可能影響。
+* 優先考慮後續可擴充至更多遊戲，而不是只為老虎機與 Roulette 硬編碼。
+
+請以「建立可長期維護的商業級多人遊戲專案」為目標，扮演我的共同技術合夥人，而不是一次性程式碼產生器。
+
+## 第一階段啟動
+
+第一階段請只完成以下內容：
+1. 建立 GDD（Game Design Document）。
+2. 建立 TDD（Technical Design Document）。
+3. 建立資料庫 ER Diagram 與 Prisma Schema 草案。
+4. 規劃完整專案資料夾結構。
+5. 將整個專案拆分成 20~30 個 Milestone。
+
+完成後請停止，等待我的確認，不要開始撰寫實際功能程式碼。

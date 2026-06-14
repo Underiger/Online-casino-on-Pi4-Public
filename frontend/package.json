@@ -1,0 +1,31 @@
+{
+  "name": "frontend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Virtual Casino Sandbox — 玩家端 Vue 3 SPA",
+  "type": "module",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "lint": "vue-tsc --noEmit",
+    "typecheck": "vue-tsc --noEmit"
+  },
+  "dependencies": {
+    "@casino/shared": "*",
+    "axios": "^1.17.0",
+    "pinia": "^3.0.4",
+    "socket.io-client": "^4.8.3",
+    "vue": "^3.4.31",
+    "vue-router": "^5.1.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.0.5",
+    "typescript": "^5.5.4",
+    "vite": "^6.4.2",
+    "vue-tsc": "^2.0.26"
+  }
+}

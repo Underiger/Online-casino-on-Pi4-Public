@@ -1,0 +1,355 @@
+// ═══════════════════════════════════════════════════════════════════
+// Virtual Casino Sandbox — SQLite dev schema（免 Docker 的本機開發模式）
+//
+// 與主 schema（schema.prisma / PostgreSQL）的差異——皆因 SQLite connector 限制：
+//   1. enum    → String（SQLite 不支援 enum；合法值以註解標註，與 PG enum 對齊）
+//   2. Json    → String（SQLite 不支援 Json；存 JSON.stringify 字串）
+//   3. @db.VarChar(n) 移除（PG 原生型別註記）
+//   4. BRIN 索引 → 一般索引（BRIN 為 PG 專屬）
+//   5. MATERIALIZED VIEW raw SQL 跳過（03_DATABASE_DESIGN §0：SQLite 環境跳過）
+//
+// 使用方式（backend/ 下）：
+//   DATABASE_URL=file:./prisma/dev.sqlite npm run prisma:push:sqlite
+//   npm run prisma:generate:sqlite     # 重新生成 SQLite 版 client（覆蓋預設輸出）
+//   切回 PG：npm run postinstall（= prisma generate，讀主 schema）
+//
+// ★ 餘額條件更新核心約束與主 schema 完全相同——見 schema.prisma 檔頭。
+// ═══════════════════════════════════════════════════════════════════
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────── 核心 ───────────────────────────
+
+model User {
+  id           String  @id @default(cuid())
+  username     String  @unique
+  passwordHash String  @map("password_hash") // argon2id
+  role         String  @default("PLAYER") // enum Role: PLAYER | ADMIN
+  // ★ 樂觀鎖欄位對：balance 只准 wallet 模組以「條件更新 + version 遞增」修改
+  balance      BigInt  @default(5000)
+  version      Int     @default(0)
+  banned       Boolean @default(false)
+  muted        Boolean @default(false)
+  flagged      Boolean @default(false)
+  avatarId     Int     @default(0) @map("avatar_id")
+
+  jackpotPoints Int       @default(0) @map("jackpot_points")
+  pityCounter   Int       @default(0) @map("pity_counter")
+  loginStreak   Int       @default(0) @map("login_streak")
+  lastDailyAt   DateTime? @map("last_daily_at")
+
+  totpSecretEnc String?  @map("totp_secret_enc")
+  totpEnabled   Boolean  @default(false) @map("totp_enabled")
+  recoveryCodes String?  @map("recovery_codes")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  transactions  BalanceTransaction[]
+  bets          BetRecord[]
+  charms        UserCharm[]
+  loginLogs     LoginLog[]
+  chats         ChatMessage[]
+  dailyProgress UserDailyProgress[]
+  jackpotWins   JackpotHistory[]
+  redemptions   GiftCodeRedemption[]
+  refreshTokens RefreshToken[]
+  achievements  UserAchievement[]
+  snapshots     LeaderboardSnapshot[]
+
+  @@index([flagged])
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  tokenHash String   @unique @map("token_hash")
+  familyId  String   @map("family_id")
+  revoked   Boolean  @default(false)
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  user      User     @relation(fields: [userId], references: [id])
+
+  @@index([userId, familyId])
+  @@map("refresh_tokens")
+}
+
+model BalanceTransaction {
+  id            String   @id @default(cuid())
+  userId        String   @map("user_id")
+  type          String // enum TxType: BET | PAYOUT | DAILY_REWARD | TASK_REWARD | GIFT_CODE | ADMIN_ADJUST | JACKPOT | REFUND
+  delta         BigInt
+  balanceBefore BigInt   @map("balance_before")
+  balanceAfter  BigInt   @map("balance_after")
+  refId         String?  @map("ref_id")
+  memo          String?
+  createdAt     DateTime @default(now()) @map("created_at")
+  user          User     @relation(fields: [userId], references: [id])
+
+  @@index([userId, createdAt])
+  @@index([type, createdAt])
+  @@index([createdAt])
+  @@map("balance_transactions")
+}
+
+model BetRecord {
+  id             String   @id @default(cuid())
+  userId         String   @map("user_id")
+  gameType       String   @map("game_type") // enum GameType: SLOT | ROULETTE
+  amount         BigInt
+  payout         BigInt   @default(0)
+  detail         String // JSON 字串（SQLite 無 Json 型別）
+  roundId        String?  @map("round_id")
+  serverSeedHash String   @map("server_seed_hash")
+  createdAt      DateTime @default(now()) @map("created_at")
+  user           User     @relation(fields: [userId], references: [id])
+
+  @@index([userId, createdAt])
+  @@index([gameType, createdAt])
+  @@index([roundId])
+  @@index([createdAt])
+  @@map("bet_records")
+}
+
+// ─────────────────────────── 護符 ───────────────────────────
+
+model Charm {
+  id          String      @id @default(cuid())
+  code        String      @unique
+  name        String
+  description String
+  type        String // enum CharmType: WEIGHT | RULE | CONDITIONAL | PITY | BONUS
+  rarity      String // enum CharmRarity: COMMON | RARE | EPIC | LEGENDARY
+  effect      String // JSON 字串（SQLite 無 Json 型別）
+  enabled     Boolean     @default(true)
+  createdAt   DateTime    @default(now()) @map("created_at")
+  owners      UserCharm[]
+
+  @@map("charms")
+}
+
+model UserCharm {
+  id         String   @id @default(cuid())
+  userId     String   @map("user_id")
+  charmId    String   @map("charm_id")
+  equipped   Boolean  @default(false)
+  slot       Int?
+  obtainedAt DateTime @default(now()) @map("obtained_at")
+  user       User     @relation(fields: [userId], references: [id])
+  charm      Charm    @relation(fields: [charmId], references: [id])
+
+  @@unique([userId, charmId])
+  @@unique([userId, slot])
+  @@index([userId, equipped])
+  @@map("user_charms")
+}
+
+// ─────────────────────────── Jackpot ───────────────────────────
+
+model Jackpot {
+  id        Int              @id @default(1) // 單行表，永遠 id=1
+  pool      BigInt           @default(0)
+  version   Int              @default(0) // 樂觀鎖
+  updatedAt DateTime         @updatedAt @map("updated_at")
+  history   JackpotHistory[]
+
+  @@map("jackpot")
+}
+
+model JackpotHistory {
+  id         String   @id @default(cuid())
+  jackpotId  Int      @default(1) @map("jackpot_id")
+  userId     String   @map("user_id")
+  poolBefore BigInt   @map("pool_before")
+  payout     BigInt
+  remained   BigInt
+  createdAt  DateTime @default(now()) @map("created_at")
+  jackpot    Jackpot  @relation(fields: [jackpotId], references: [id])
+  user       User     @relation(fields: [userId], references: [id])
+
+  @@index([createdAt])
+  @@map("jackpot_history")
+}
+
+// ─────────────────────────── Gift Code ───────────────────────────
+
+model GiftCode {
+  id          String               @id @default(cuid())
+  code        String               @unique
+  amount      BigInt
+  charmId     String?              @map("charm_id")
+  maxUses     Int                  @default(1) @map("max_uses")
+  usedCount   Int                  @default(0) @map("used_count")
+  expiresAt   DateTime             @map("expires_at")
+  createdById String               @map("created_by_id")
+  createdAt   DateTime             @default(now()) @map("created_at")
+  redemptions GiftCodeRedemption[]
+
+  @@index([expiresAt])
+  @@map("gift_codes")
+}
+
+model GiftCodeRedemption {
+  id         String   @id @default(cuid())
+  giftCodeId String   @map("gift_code_id")
+  userId     String   @map("user_id")
+  createdAt  DateTime @default(now()) @map("created_at")
+  giftCode   GiftCode @relation(fields: [giftCodeId], references: [id])
+  user       User     @relation(fields: [userId], references: [id])
+
+  @@unique([giftCodeId, userId])
+  @@map("gift_code_redemptions")
+}
+
+// ─────────────────────────── 紀錄與日誌 ───────────────────────────
+
+model LoginLog {
+  id        String   @id @default(cuid())
+  userId    String?  @map("user_id")
+  username  String
+  ip        String
+  userAgent String   @map("user_agent")
+  result    String // enum LoginResult: SUCCESS | WRONG_PASSWORD | BANNED | TOTP_FAILED
+  createdAt DateTime @default(now()) @map("created_at")
+  user      User?    @relation(fields: [userId], references: [id])
+
+  @@index([userId, createdAt])
+  @@index([ip, createdAt])
+  @@map("login_logs")
+}
+
+model ChatMessage {
+  id        String   @id @default(cuid())
+  userId    String?  @map("user_id")
+  content   String
+  system    Boolean  @default(false)
+  createdAt DateTime @default(now()) @map("created_at")
+  user      User?    @relation(fields: [userId], references: [id])
+
+  @@index([createdAt])
+  @@map("chat_messages")
+}
+
+model LeaderboardSnapshot {
+  id        String   @id @default(cuid())
+  kind      String // enum LeaderboardKind: DAILY | WEEKLY | TOTAL
+  periodKey String?  @map("period_key")
+  rank      Int
+  userId    String   @map("user_id")
+  score     BigInt
+  createdAt DateTime @default(now()) @map("created_at")
+  user      User     @relation(fields: [userId], references: [id])
+
+  @@unique([kind, periodKey, rank])
+  @@index([userId])
+  @@map("leaderboard_snapshots")
+}
+
+// ─────────────────────────── 每日系統 ───────────────────────────
+
+model DailyTask {
+  id          String              @id @default(cuid())
+  code        String              @unique
+  name        String
+  type        String // enum TaskType: SPIN_COUNT | ROULETTE_ROUNDS | WIN_TRIPLE | NET_WIN | CHAT_COUNT
+  target      Int
+  rewardCoin  BigInt              @default(0) @map("reward_coin")
+  rewardCharm Boolean             @default(false) @map("reward_charm")
+  enabled     Boolean             @default(true)
+  progress    UserDailyProgress[]
+
+  @@map("daily_tasks")
+}
+
+model UserDailyProgress {
+  id        String    @id @default(cuid())
+  userId    String    @map("user_id")
+  taskId    String    @map("task_id")
+  dateKey   String    @map("date_key")
+  progress  Int       @default(0)
+  claimed   Boolean   @default(false)
+  claimedAt DateTime? @map("claimed_at")
+  user      User      @relation(fields: [userId], references: [id])
+  task      DailyTask @relation(fields: [taskId], references: [id])
+
+  @@unique([userId, taskId, dateKey])
+  @@index([dateKey])
+  @@map("user_daily_progress")
+}
+
+// ─────────────────────────── 管理與安全 ───────────────────────────
+
+model AdminAuditLog {
+  id           String   @id @default(cuid())
+  adminId      String   @map("admin_id")
+  action       String
+  targetUserId String?  @map("target_user_id")
+  before       String? // JSON 字串
+  after        String? // JSON 字串
+  ip           String
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@index([adminId, createdAt])
+  @@index([targetUserId])
+  @@map("admin_audit_logs")
+}
+
+model IllegalPacketLog {
+  id        String   @id @default(cuid())
+  userId    String?  @map("user_id")
+  ip        String
+  violation String // enum PacketViolation: BAD_SIGNATURE | NONCE_REPLAY | SEQ_REGRESSION | STALE_TIMESTAMP | OUT_OF_WINDOW | RATE_LIMIT
+  endpoint  String
+  rawSample String?  @map("raw_sample")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([userId, createdAt])
+  @@index([violation, createdAt])
+  @@map("illegal_packet_logs")
+}
+
+model Announcement {
+  id        String    @id @default(cuid())
+  title     String
+  content   String
+  active    Boolean   @default(true)
+  startsAt  DateTime  @default(now()) @map("starts_at")
+  endsAt    DateTime? @map("ends_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  @@index([active, startsAt])
+  @@map("announcements")
+}
+
+// ─────────────────────────── 成就 ───────────────────────────
+
+model Achievement {
+  id          String            @id @default(cuid())
+  code        String            @unique
+  name        String
+  description String
+  rewardCoin  BigInt            @default(0) @map("reward_coin")
+  unlocks     UserAchievement[]
+
+  @@map("achievements")
+}
+
+model UserAchievement {
+  id            String      @id @default(cuid())
+  userId        String      @map("user_id")
+  achievementId String      @map("achievement_id")
+  unlockedAt    DateTime    @default(now()) @map("unlocked_at")
+  user          User        @relation(fields: [userId], references: [id])
+  achievement   Achievement @relation(fields: [achievementId], references: [id])
+
+  @@unique([userId, achievementId])
+  @@map("user_achievements")
+}

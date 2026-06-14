@@ -1,0 +1,179 @@
+# docker-compose.arm64.yml — 生產部署（Raspberry Pi 4 / arm64）
+#
+# 使用方式：
+#   cp .env.example .env.production
+#   nano .env.production          # 填入 NODE_ENV=production 及正確機密值
+#   bash scripts/gen-cert.sh      # 產生自簽 TLS 憑證（首次部署）
+#   bash scripts/deploy.sh        # 執行完整部署流程
+#
+# 注意：
+#   - DATABASE_URL 與 REDIS_URL 須使用 Docker 服務名稱（postgres / redis）而非 localhost
+#   - 機密值請先執行 bash scripts/gen-secrets.sh 產生
+#   - 前端 dist 目錄須在宿主機先 build（deploy.sh 會自動執行）
+#
+# Pi 4 資源限制依 02_TDD §7.1（4 GB RAM 機型）：
+#   PostgreSQL 768 MB、Node.js 512 MB（×2 workers）、Redis 256 MB、Nginx 64 MB
+
+name: virtual-casino-sandbox-prod
+
+services:
+  # ── PostgreSQL 16 ────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    platform: linux/arm64
+    container_name: casino-postgres
+    restart: unless-stopped
+    env_file: .env.production
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-casino}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-casino_prod}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    mem_limit: 768m
+    memswap_limit: 768m
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-casino} -d ${POSTGRES_DB:-casino_prod}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ── Redis 7 ──────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    platform: linux/arm64
+    container_name: casino-redis
+    restart: unless-stopped
+    # AOF 持久化確保 Jackpot 累積值、HMAC 會話金鑰等在重啟後不遺失
+    # maxmemory 留 56 MB 餘裕給 OS overhead（mem_limit 256 MB）
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --maxmemory
+      - 200mb
+      - --maxmemory-policy
+      - allkeys-lru
+    volumes:
+      - redisdata:/data
+    mem_limit: 256m
+    memswap_limit: 256m
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ── Node.js App（cluster ×2 workers）────────────────────────────────────────
+  app:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      target: runtime
+    platform: linux/arm64
+    image: casino-backend:latest
+    container_name: casino-app
+    restart: unless-stopped
+    env_file: .env.production
+    environment:
+      NODE_ENV: production
+    mem_limit: 512m
+    memswap_limit: 512m
+    networks:
+      - internal
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      # node:20-alpine 內建 node，用最小開銷驗 GET /
+      test:
+        - CMD
+        - node
+        - -e
+        - |
+          require('http').get('http://localhost:3000/',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))
+      interval: 15s
+      timeout: 8s
+      retries: 3
+      start_period: 40s
+
+  # ── Nginx 1.27（TLS 終止 + 靜態檔案 + 反向代理）────────────────────────────
+  nginx:
+    image: nginx:1.27-alpine
+    platform: linux/arm64
+    container_name: casino-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+      - ./frontend/dist:/usr/share/nginx/html/player:ro
+      - ./admin-frontend/dist:/usr/share/nginx/html/admin:ro
+      - nginx_logs:/var/log/nginx
+    mem_limit: 64m
+    memswap_limit: 64m
+    networks:
+      - internal
+    depends_on:
+      app:
+        condition: service_healthy
+    healthcheck:
+      # 打 /health（nginx 回傳 200 "ok"，不走後端）
+      test: ["CMD-SHELL", "wget -qO /dev/null http://localhost/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # ── Prisma Migration Runner（profile:migrate，部署前一次性執行）──────────────
+  # 使用 deps build stage（含完整 devDependencies，包括 prisma CLI）
+  # 執行：docker compose -f docker-compose.arm64.yml --profile migrate run --rm migrate
+  migrate:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      target: deps
+    platform: linux/arm64
+    container_name: casino-migrate
+    working_dir: /app
+    volumes:
+      - ./backend/prisma:/app/backend/prisma:ro
+    command:
+      - sh
+      - -c
+      - |
+        echo "執行 prisma migrate deploy..."
+        node_modules/.bin/prisma migrate deploy --schema=backend/prisma/schema.prisma
+        echo "Migration 完成。"
+    env_file: .env.production
+    networks:
+      - internal
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles:
+      - migrate
+
+# ── 網路 ────────────────────────────────────────────────────────────────────────
+networks:
+  # 橋接網路：postgres/redis/app 僅對內互通，不對宿主機暴露 port
+  # nginx 透過此網路代理到 app:3000，自身以 ports 對外開放 80/443
+  internal:
+    driver: bridge
+
+# ── 持久化卷 ─────────────────────────────────────────────────────────────────────
+volumes:
+  pgdata:
+  redisdata:
+  nginx_logs:
