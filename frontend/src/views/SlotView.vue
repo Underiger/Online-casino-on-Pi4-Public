@@ -407,20 +407,22 @@ onUnmounted(() => {
   display: block;
   pointer-events: none;
   user-select: none;
+  position: relative;
+  z-index: 2;
 }
 
-/* 滾輪嵌入機台視窗（百分比根據圖片位置調整） */
+/* 滾輪放在機台圖下層，透過透明視窗透出 */
 .reels-inner {
   position: absolute;
-  left: 29%;
-  top: 36%;
-  width: 43%;
-  height: 22%;
+  left: 28%;
+  top: 35%;
+  width: 44%;
+  height: 25%;
   display: flex;
   align-items: stretch;
   justify-content: center;
   gap: 0;
-  overflow: hidden;
+  z-index: 1;
 }
 
 /* 滾輪符號縮小以配合機台視窗 */
@@ -441,9 +443,9 @@ onUnmounted(() => {
 }
 
 .reels-inner :deep(.symbol) {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
+  width: 105%;
+  height: 105%;
+  object-fit: contain;
 }
 
 .reels-inner :deep(.symbol-label) {
@@ -454,12 +456,13 @@ onUnmounted(() => {
 .lever-btn {
   position: absolute;
   right: 0;
-  top: 30%;
-  width: 18%;
-  height: 44%;
+  top: 20%;
+  width: 20%;
+  height: 55%;
   background: transparent;
   border: none;
   cursor: pointer;
+  z-index: 3;
 }
 
 .lever-btn:disabled {
