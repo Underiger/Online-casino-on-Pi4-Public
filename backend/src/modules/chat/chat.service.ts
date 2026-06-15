@@ -37,6 +37,11 @@ const BURST_RATE = 0.5;
 const MINUTE_CAPACITY = 10;
 const MINUTE_RATE = 10 / 60;
 
+/** 洗頻自動禁言：分鐘桶於視窗內連續被擋達此次數即自動禁言（限時，到期自動解除） */
+const AUTO_MUTE_THRESHOLD = 5;
+/** 洗頻計數視窗（秒）：期間累計達閾值才觸發；之後自然過期重置 */
+const AUTO_MUTE_WINDOW_SECONDS = 60;
+
 // ─────────────────────────── 型別（鏡像 packages/shared chat.dto.ts / socket-events.ts）───────────────────────────
 
 /** chat:message 廣播 payload（同 ChatMessagePayload in packages/shared/src/socket-events.ts） */
@@ -60,6 +65,12 @@ export interface ChatServiceDeps {
   prisma: PrismaClient;
   redis: Redis;
   log?: ChatLog;
+  /**
+   * 洗頻達閾值時自動禁言（缺省則停用自動禁言）。
+   * 由 chat.gateway 接 admin.service.setMute（行為者 SYSTEM、限時數分鐘，
+   * 到期由 moderation job 自動解除）。
+   */
+  autoMute?: (userId: string) => Promise<void>;
 }
 
 // ─────────────────────────── URL 過濾 + HTML 轉義（純函式，測試直接覆蓋）───────────────────────────
@@ -94,6 +105,35 @@ export function sanitize(text: string): string {
 export function createChatService(deps: ChatServiceDeps) {
   const { prisma, redis } = deps;
   const log: ChatLog = deps.log ?? { warn: () => {} };
+  const autoMute = deps.autoMute;
+
+  // ── 洗頻自動禁言（分鐘桶連續被擋達閾值）──
+
+  const floodKey = (userId: string): string => `chat:flood:${userId}`;
+
+  /**
+   * 分鐘桶被擋一次即累計；視窗內達閾值 → 自動禁言（限時，到期由 moderation job 解除）。
+   * Redis 故障 → 跳過（fail-open，與頻率桶一致）。一旦禁言，後續訊息於 checkUserStatus
+   * 即短路為 USER_MUTED，不會重複觸發。
+   */
+  async function maybeAutoMute(userId: string): Promise<void> {
+    if (autoMute === undefined) return;
+    let count: number;
+    try {
+      count = await redis.incr(floodKey(userId));
+      if (count === 1) await redis.expire(floodKey(userId), AUTO_MUTE_WINDOW_SECONDS);
+    } catch (err) {
+      log.warn({ err: (err as Error).message, userId }, 'chat: 洗頻計數 Redis 不可用，跳過自動禁言');
+      return;
+    }
+    if (count < AUTO_MUTE_THRESHOLD) return;
+    try {
+      await autoMute(userId);
+      await redis.del(floodKey(userId));
+    } catch (err) {
+      log.warn({ err: (err as Error).message, userId }, 'chat: 自動禁言失敗');
+    }
+  }
 
   // ── 令牌桶（與 HTTP rate-limit plugin 同義；直接調 Redis Lua）──
 
@@ -231,7 +271,10 @@ export function createChatService(deps: ChatServiceDeps) {
 
     const rateResult = await checkRateLimit(userId);
     if (rateResult === 'burst_exceeded') return { reason: 'RATE_LIMIT_BURST' };
-    if (rateResult === 'minute_exceeded') return { reason: 'RATE_LIMIT_MINUTE' };
+    if (rateResult === 'minute_exceeded') {
+      await maybeAutoMute(userId);
+      return { reason: 'RATE_LIMIT_MINUTE' };
+    }
 
     const content = sanitize(trimmed);
 
