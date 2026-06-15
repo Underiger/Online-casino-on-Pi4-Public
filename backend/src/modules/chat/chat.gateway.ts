@@ -20,6 +20,14 @@ import { createChatService, type ChatService } from './chat.service.js';
 import { createDailyService } from '../daily/daily.service.js';
 import { createWalletService } from '../wallet/wallet.service.js';
 import { createAchievementService } from '../achievement/achievement.service.js';
+import { createAdminService } from '../admin/admin.service.js';
+
+/** 洗頻自動禁言時長（分鐘）；到期由 moderation job 自動解除 */
+const CHAT_FLOOD_MUTE_MINUTES = 5;
+/** 自動禁言的稽核行為者 / 來源 / 理由 */
+const CHAT_FLOOD_MUTE_ACTOR = 'SYSTEM';
+const CHAT_FLOOD_MUTE_IP = 'system';
+const CHAT_FLOOD_MUTE_REASON = 'auto: 聊天洗頻自動禁言';
 
 export interface ChatGatewayOptions {
   /** 測試注入 */
@@ -35,15 +43,37 @@ export function createChatGateway(
   io: GameServer,
   opts: ChatGatewayOptions = {},
 ) {
+  const wallet = createWalletService(app.prisma);
+  // 洗頻自動禁言：複用 admin.setMute（限時，到期由 moderation job 自動解除）。
+  // scheduleTimedUnmute 惰性引用——moderation job 於 server.ts 較晚註冊，
+  // 自動禁言發生於請求時，屆時 decorator 已就緒。
+  const moderation = createAdminService({
+    prisma: app.prisma,
+    redis: app.redis,
+    wallet,
+    scheduleTimedUnmute: (userId: string, mutedUntil: string, delayMs: number): void => {
+      if (app.hasDecorator('scheduleTimedUnmute')) {
+        app.scheduleTimedUnmute(userId, mutedUntil, delayMs);
+      }
+    },
+    log: app.log,
+  });
+
   const service =
     opts.service ??
     createChatService({
       prisma: app.prisma,
       redis: app.redis,
       log: app.log,
+      autoMute: (userId: string): Promise<void> =>
+        moderation
+          .setMute(CHAT_FLOOD_MUTE_ACTOR, userId, true, CHAT_FLOOD_MUTE_IP, {
+            durationMinutes: CHAT_FLOOD_MUTE_MINUTES,
+            reason: CHAT_FLOOD_MUTE_REASON,
+          })
+          .then(() => undefined),
     });
 
-  const wallet = createWalletService(app.prisma);
   const daily = createDailyService({
     prisma: app.prisma,
     redis: app.redis,
