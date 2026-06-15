@@ -16,7 +16,7 @@
   },
   "dependencies": {
     "@casino/shared": "*",
-    "axios": "^1.7.9",
+    "axios": "^1.17.0",
     "pinia": "^3.0.1",
     "vue": "^3.4.31",
     "vue-router": "^4.4.5"
