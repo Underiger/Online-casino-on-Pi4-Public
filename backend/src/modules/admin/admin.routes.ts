@@ -62,6 +62,13 @@ const adminRoutes: FastifyPluginAsync<AdminRoutesOptions> = async (app, opts) =>
       redis: app.redis,
       wallet: createWalletService(app.prisma),
       hmacKeys: app.hmacKeys,
+      // 限時禁言到期自動解除：惰性引用 app.scheduleTimedUnmute（moderation job 於
+      // server.ts 較晚註冊；setMute 於請求時呼叫，屆時 decorator 已就緒）
+      scheduleTimedUnmute: (userId: string, mutedUntil: string, delayMs: number): void => {
+        if (app.hasDecorator('scheduleTimedUnmute')) {
+          app.scheduleTimedUnmute(userId, mutedUntil, delayMs);
+        }
+      },
       ...(io !== null
         ? {
             disconnectUser: (userId: string): void => {
