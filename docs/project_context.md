@@ -25,7 +25,7 @@ casino/
 │   │   ├── sockets/  # Socket.IO 事件定義與 Gateway
 │   │   └── jobs/     # BullMQ 排程任務（jackpot-flush, leaderboard-refresh, daily-reset, monitor-scan）
 │   ├── prisma/       # Prisma schema + migrations + seed
-│   └── test/         # Vitest 單元 & 整合測試（356 筆，全綠）
+│   └── test/         # Vitest 單元 & 整合測試（376 筆，全綠）
 ├── frontend/         # Vue 3 玩家端（老虎機、輪盤、聊天、排行榜、成就、個人頁）
 ├── admin-frontend/   # Vue 3 管理後台（M23 完成；base: /admin/）
 ├── packages/shared/  # DTO / enum / 常數（前端專用；後端自行鏡像）
@@ -38,7 +38,7 @@ casino/
 
 ---
 
-## Milestone 進度（截至 2026-06-14）
+## Milestone 進度（截至 2026-06-15）
 
 | Milestone | 內容 | 狀態 |
 |-----------|------|------|
@@ -56,7 +56,10 @@ casino/
 | M23 | 管理後台前端（Vue 3 SPA，六個 View + ReverifyDialog） | ✅ |
 | M24 | 系統監控 API + 異常偵測（WIN_RATE / NET_WIN_OUTLIER / BET_RATE） | ✅ |
 | M25 | 生產部署管線（docker-compose.arm64.yml / nginx / scripts） | ✅ |
-| M26–M28 | 效能優化、壓力測試、最終 Pi 4 驗收 | ⬜ |
+| M26 | RTP 模擬（千萬次蒙地卡羅）+ k6 負載測試 | ✅ |
+| M27 | E2E 整合測試（376 條）+ 安全演練（5 向量） | ✅ |
+| M28 | 文件定稿 + v1.0.0 發布 | ✅ |
+| — | 最終 Pi 4 真機驗收（需 arm64 硬體 + 正式 TLS 憑證） | ⏳ 待硬體 |
 
 ---
 
@@ -118,7 +121,7 @@ npm run dev:backend      # http://localhost:3000
 npm run dev:frontend     # http://localhost:5173
 npm run dev:admin        # http://localhost:5174/admin/
 
-# 測試（356 筆）
+# 測試（376 筆）
 cd backend && npm test
 
 # TypeScript 檢查 + Lint
@@ -159,10 +162,12 @@ sudo bash scripts/sysctl-hardening.sh   # 核心安全參數強化（選用）
 
 ---
 
-## 下一步：M26
+## 下一步：Pi 4 真機驗收
 
-詳見 `docs/PROJECT_STATE.md`。
+M14–M28 已全部完成，v1.0.0 已發布。唯一未完成項為 **Pi 4 真機最終驗收**
+（需 arm64 硬體 + 正式 Let's Encrypt 憑證；硬體到貨前無法執行）。
+其餘端對端冒煙測試需 PostgreSQL + Redis 執行環境。詳見 `docs/PROJECT_STATE.md`。
 
 ---
 
-*更新日期：2026-06-14　Milestone：M25*
+*更新日期：2026-06-15　Milestone：M28（v1.0.0 已發布）*
