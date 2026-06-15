@@ -89,6 +89,20 @@ const reverifyKey = (token: string): string => `admin:reverify:${token}`;
 const totpUsedKey = (userId: string, code: string): string => `admin:totp:used:${userId}:${code}`;
 const muteUntilKey = (userId: string): string => `admin:mute:until:${userId}`;
 
+// ─── 自動操作（系統發起）標記 ──────────────────────────────────────────────────
+
+/** 系統自動操作（聊天洗頻禁言 / 限時禁言到期解除）的稽核行為者 */
+const SYSTEM_ACTOR = 'SYSTEM';
+/** 系統自動操作的稽核來源 IP 標記 */
+const SYSTEM_IP = 'system';
+/** 限時禁言到期自動解除的稽核理由 */
+const AUTO_UNMUTE_REASON = 'auto: 限時禁言到期自動解除';
+/**
+ * 限時禁言 Redis 期限標記的額外存活緩衝（秒）：保證到期任務觸發瞬間標記仍在供值比對；
+ * 任務遺失時於 duration+buffer 後自癒清理。
+ */
+const MUTE_MARKER_BUFFER_SECONDS = 3600;
+
 // ─── 型別 ─────────────────────────────────────────────────────────────────────
 
 export interface AdminServiceLog {
@@ -106,6 +120,8 @@ export interface AdminServiceDeps {
   disconnectUser?: (userId: string) => void;
   /** 建立有效公告時全服廣播（包裝 app.io.emit system:announcement）；缺省則略過 */
   emitAnnouncement?: (payload: { id: string; title: string; content: string }) => void;
+  /** 限時禁言時排程到期自動解除（包裝 app.scheduleTimedUnmute）；缺省則不自動解除 */
+  scheduleTimedUnmute?: (userId: string, mutedUntil: string, delayMs: number) => void;
   log?: AdminServiceLog;
 }
 
@@ -517,11 +533,19 @@ export function createAdminService(deps: AdminServiceDeps) {
       });
     });
 
-    // 時長為純記錄（Redis 留痕；自動解除由後續排程實作，無 mutedUntil 欄位）
+    // 限時禁言：寫 Redis 期限標記（值＝mutedUntil，供到期任務 supersession 比對；
+    // EX 留緩衝確保任務觸發瞬間標記仍在）+ 排程到期自動解除。
+    // 永久禁言 / 解禁：清除標記，使任何在途的舊到期任務比對不符而跳過（不誤解永久禁言）。
     try {
       if (mutedUntil !== null && opts.durationMinutes !== undefined) {
-        await redis.set(muteUntilKey(targetUserId), mutedUntil, 'EX', opts.durationMinutes * 60);
-      } else if (!muted) {
+        await redis.set(
+          muteUntilKey(targetUserId),
+          mutedUntil,
+          'EX',
+          opts.durationMinutes * 60 + MUTE_MARKER_BUFFER_SECONDS,
+        );
+        deps.scheduleTimedUnmute?.(targetUserId, mutedUntil, opts.durationMinutes * 60_000);
+      } else {
         await redis.del(muteUntilKey(targetUserId));
       }
     } catch (err) {
@@ -529,6 +553,57 @@ export function createAdminService(deps: AdminServiceDeps) {
     }
 
     return { userId: targetUserId, muted, mutedUntil };
+  }
+
+  /**
+   * 限時禁言到期自動解除（由 moderation BullMQ 任務呼叫；行為者＝SYSTEM）。
+   * supersession 防護：比對 Redis 期限標記——值不符代表已被新禁言/解禁/永久禁言
+   * 取代，跳過不解除。Redis 不確定時亦不解除（fail-safe，避免誤解永久禁言）。
+   */
+  async function releaseTimedMute(
+    userId: string,
+    scheduledMutedUntil: string,
+  ): Promise<{ released: boolean }> {
+    let current: string | null;
+    try {
+      current = await redis.get(muteUntilKey(userId));
+    } catch (err) {
+      log.warn({ err: (err as Error).message, userId }, 'admin: releaseTimedMute 讀取期限標記失敗，跳過');
+      return { released: false };
+    }
+    if (current !== scheduledMutedUntil) {
+      // 已被新禁言（新值）/ 解禁或永久禁言（已刪除）取代
+      return { released: false };
+    }
+
+    const target = await prisma.user.findUnique({ where: { id: userId }, select: { muted: true } });
+    if (target === null || !target.muted) {
+      try {
+        await redis.del(muteUntilKey(userId));
+      } catch {
+        /* 標記清理失敗無害（EX 緩衝會自癒） */
+      }
+      return { released: false };
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.user.update({ where: { id: userId }, data: { muted: false } });
+      await writeAudit(tx, {
+        adminId: SYSTEM_ACTOR,
+        action: AUDIT_ACTIONS.UNMUTE_USER,
+        targetUserId: userId,
+        before: { muted: true },
+        after: { muted: false, reason: AUTO_UNMUTE_REASON },
+        ip: SYSTEM_IP,
+      });
+    });
+
+    try {
+      await redis.del(muteUntilKey(userId));
+    } catch {
+      /* 標記清理失敗無害（EX 緩衝會自癒） */
+    }
+    return { released: true };
   }
 
   /** 手動調幣（高危）：走 wallet（type=ADMIN_ADJUST）+ 稽核，同一 $transaction 原子 */
@@ -889,6 +964,7 @@ export function createAdminService(deps: AdminServiceDeps) {
     getPlayer,
     setBan,
     setMute,
+    releaseTimedMute,
     adjustBalance,
     // gift code
     createGiftCode,
