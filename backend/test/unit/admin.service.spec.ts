@@ -676,3 +676,70 @@ describe('admin.service: Gift Code 與稽核日誌', () => {
     expect(filtered.total).toBe(0);
   });
 });
+
+// ═════════════════ 限時禁言自動解除（releaseTimedMute）═════════════════
+
+describe('admin.service: 限時禁言自動解除', () => {
+  function setupWithSchedule(seedUsers: Array<Partial<FakeUser> & { id: string }>) {
+    const { client, state } = createFakeDb(seedUsers);
+    const { redis, store } = createFakeRedis();
+    const prisma = client as unknown as PrismaClient;
+    const scheduleTimedUnmute = vi.fn();
+    const service = createAdminService({
+      prisma,
+      redis,
+      wallet: createWalletService(prisma),
+      scheduleTimedUnmute,
+    });
+    return { service, state, store, scheduleTimedUnmute };
+  }
+
+  it('setMute 限時 → 排程到期解除 + 寫 Redis 期限標記（值＝mutedUntil）', async () => {
+    const { service, store, scheduleTimedUnmute } = setupWithSchedule([
+      { id: 'admin1', role: 'ADMIN', username: 'admin' },
+      { id: 'u1', username: 'u1' },
+    ]);
+    const res = await service.setMute('admin1', 'u1', true, 'ip', { durationMinutes: 5 });
+    expect(res.mutedUntil).not.toBeNull();
+    expect(scheduleTimedUnmute).toHaveBeenCalledWith('u1', res.mutedUntil, 5 * 60_000);
+    expect(store.get('admin:mute:until:u1')).toBe(res.mutedUntil);
+  });
+
+  it('setMute 永久（無時長）→ 不排程，且清除既有期限標記（防舊到期任務誤解永久禁言）', async () => {
+    const { service, store, scheduleTimedUnmute } = setupWithSchedule([
+      { id: 'admin1', role: 'ADMIN', username: 'admin' },
+      { id: 'u1', username: 'u1' },
+    ]);
+    store.set('admin:mute:until:u1', '2099-01-01T00:00:00.000Z'); // 先前的限時標記
+    await service.setMute('admin1', 'u1', true, 'ip', {});
+    expect(scheduleTimedUnmute).not.toHaveBeenCalled();
+    expect(store.has('admin:mute:until:u1')).toBe(false);
+  });
+
+  it('releaseTimedMute：標記相符 → 解除 + 稽核 UNMUTE_USER（行為者 SYSTEM）+ 清標記', async () => {
+    const { service, state, store } = setupWithSchedule([{ id: 'u1', username: 'u1', muted: true }]);
+    store.set('admin:mute:until:u1', 'T1');
+    const r = await service.releaseTimedMute('u1', 'T1');
+    expect(r.released).toBe(true);
+    expect(state.users.find((u) => u.id === 'u1')!.muted).toBe(false);
+    expect(store.has('admin:mute:until:u1')).toBe(false);
+    const audit = state.auditLogs.find((a) => a['action'] === AUDIT_ACTIONS.UNMUTE_USER)!;
+    expect(audit).toBeDefined();
+    expect(audit['adminId']).toBe('SYSTEM');
+  });
+
+  it('releaseTimedMute：標記不符（已被新禁言/永久禁言取代）→ 不解除、保持禁言', async () => {
+    const { service, state, store } = setupWithSchedule([{ id: 'u1', username: 'u1', muted: true }]);
+    store.set('admin:mute:until:u1', 'T2');
+    const r = await service.releaseTimedMute('u1', 'T1');
+    expect(r.released).toBe(false);
+    expect(state.users.find((u) => u.id === 'u1')!.muted).toBe(true);
+  });
+
+  it('releaseTimedMute：標記不存在（已手動解禁）→ 不解除', async () => {
+    const { service, state } = setupWithSchedule([{ id: 'u1', username: 'u1', muted: true }]);
+    const r = await service.releaseTimedMute('u1', 'T1');
+    expect(r.released).toBe(false);
+    expect(state.users.find((u) => u.id === 'u1')!.muted).toBe(true);
+  });
+});
