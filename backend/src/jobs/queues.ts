@@ -18,6 +18,9 @@ import { env } from '../config/env.js';
 /** Jackpot flush / tick 共用 queue 名稱 */
 export const JACKPOT_FLUSH_QUEUE_NAME = 'jackpot-flush';
 
+/** Moderation 延遲任務 queue 名稱（限時禁言到期自動解除等） */
+export const MODERATION_QUEUE_NAME = 'moderation';
+
 /** BullMQ 專用 ioredis 連線（Queue 與 Worker 各建一條） */
 export function createJobConnection(): Redis {
   return new Redis(env.REDIS_URL, {
@@ -37,6 +40,18 @@ export function createJackpotFlushQueue(connection: Redis): Queue {
     connection,
     defaultJobOptions: {
       // repeatable 任務每次迭代都是新 job——完成即清、失敗留少量供排錯
+      removeOnComplete: true,
+      removeOnFail: 100,
+    },
+  });
+}
+
+/** moderationQueue：限時禁言到期自動解除等一次性延遲（delay）任務掛載於此 */
+export function createModerationQueue(connection: Redis): Queue {
+  return new Queue(MODERATION_QUEUE_NAME, {
+    connection,
+    defaultJobOptions: {
+      // 一次性延遲任務：完成即清、失敗留少量供排錯
       removeOnComplete: true,
       removeOnFail: 100,
     },
