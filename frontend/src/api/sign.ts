@@ -52,7 +52,7 @@ export interface SignPayload {
   /** HMAC 金鑰（base64url，來自 auth store，僅存記憶體） */
   hmacKey: string;
   userId: string;
-  gameType: 'SLOT' | 'ROULETTE';
+  gameType: 'SLOT' | 'ROULETTE' | 'DRAGON_GATE' | 'HIGH_LOW' | 'BLACKJACK';
   betAmount: number;
   /** 嚴格遞增序號（由呼叫端傳入，呼叫後外部自增） */
   seq: number;

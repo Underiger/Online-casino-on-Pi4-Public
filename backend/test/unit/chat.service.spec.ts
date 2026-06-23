@@ -76,6 +76,15 @@ function createFakePrisma(
         if (take !== undefined) result = result.slice(0, take);
         return result;
       },
+      async deleteMany({ where }: { where: { createdAt: { lt: Date } } }) {
+        const cutoff = where.createdAt.lt;
+        const before = chatRows.length;
+        const kept = chatRows.filter((row) => row.createdAt.getTime() >= cutoff.getTime());
+        const count = before - kept.length;
+        chatRows.length = 0;
+        chatRows.push(...kept);
+        return { count };
+      },
     },
     async $transaction<T>(ops: T[]): Promise<T[]> {
       return ops;
@@ -383,5 +392,59 @@ describe('chatService.sendSystemMessage', () => {
     expect(payload.username).toBeNull();
     expect(payload.system).toBe(true);
     expect(payload.content).toBe('系統公告：Jackpot 觸發！');
+  });
+});
+
+// ═════════════════ cleanupOldMessages 測試 ═════════════════
+
+describe('chatService.cleanupOldMessages', () => {
+  it('刪除超過保留天數的訊息，保留窗內的訊息不動', async () => {
+    const now = Date.now();
+    const old1 = new Date(now - 8 * 24 * 60 * 60 * 1000); // 8 天前
+    const old2 = new Date(now - 10 * 24 * 60 * 60 * 1000); // 10 天前
+    const recent = new Date(now - 1 * 24 * 60 * 60 * 1000); // 1 天前
+    const { prisma, rows } = createFakePrisma([], [
+      { id: 'old1', userId: null, content: 'old1', system: true, createdAt: old1 },
+      { id: 'old2', userId: null, content: 'old2', system: true, createdAt: old2 },
+      { id: 'recent', userId: null, content: 'recent', system: true, createdAt: recent },
+    ]);
+    const { redis } = createFakeRedis();
+    const service = createChatService({ prisma, redis });
+
+    const count = await service.cleanupOldMessages();
+
+    expect(count).toBe(2);
+    expect(rows.map((r) => r.id)).toEqual(['recent']);
+  });
+
+  it('沒有逾期訊息時回傳 0，不刪除任何資料', async () => {
+    const recent = new Date(Date.now() - 1000);
+    const { prisma, rows } = createFakePrisma([], [
+      { id: 'recent', userId: null, content: 'recent', system: true, createdAt: recent },
+    ]);
+    const { redis } = createFakeRedis();
+    const service = createChatService({ prisma, redis });
+
+    const count = await service.cleanupOldMessages();
+
+    expect(count).toBe(0);
+    expect(rows).toHaveLength(1);
+  });
+
+  it('支援自訂保留天數（不傳則用 CHAT_DB_RETENTION_DAYS=7 預設值）', async () => {
+    const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+    const { prisma, rows } = createFakePrisma([], [
+      { id: 'a', userId: null, content: 'a', system: true, createdAt: threeDaysAgo },
+    ]);
+    const { redis } = createFakeRedis();
+    const service = createChatService({ prisma, redis });
+
+    // 預設 7 天保留：3 天前的訊息還不該被刪
+    expect(await service.cleanupOldMessages()).toBe(0);
+    expect(rows).toHaveLength(1);
+
+    // 自訂保留 1 天：3 天前的訊息應被刪除
+    expect(await service.cleanupOldMessages(1)).toBe(1);
+    expect(rows).toHaveLength(0);
   });
 });

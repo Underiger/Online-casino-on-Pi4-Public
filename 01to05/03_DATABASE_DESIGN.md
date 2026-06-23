@@ -1,5 +1,10 @@
 # 資料庫設計書：ER Diagram 與 Prisma Schema 草案
-**專案：Virtual Casino Sandbox｜版本 v1.0｜PostgreSQL 16（dev 可 SQLite）｜Prisma Migrate 管理**
+**專案：Virtual Casino Sandbox｜版本 v1.1｜PostgreSQL 16（dev 可 SQLite）｜Prisma Migrate 管理**
+
+> v1.1：M29（2026-06-20）新增射龍門/High-Low/Blackjack 三款遊戲，**未新增任何 Prisma
+> model**——僅擴充 `GameType` enum 三個值並豐富 `BetRecord.detail` 的 JSON 形狀（見 §2/§3）。
+> Schema 草案已對齊 `backend/prisma/schema.prisma` 實際內容（含 `@map` snake_case 欄位/表名、
+> 原生 BRIN 索引語法、`binaryTargets` 等實作細節）。
 
 ---
 
@@ -19,6 +24,9 @@
 - 高頻寫入表（BetRecord、BalanceTransaction、IllegalPacketLog）不設外鍵 CASCADE 刪除，僅 RESTRICT——對帳資料永不級聯消失。
 - `Jackpot` 與 `User` 帶 `version` 欄位作樂觀鎖。
 - MATERIALIZED VIEW（leaderboard_daily/weekly/total）不進 Prisma schema，由 raw SQL migration 建立（PG 專屬，SQLite 環境跳過）。
+- BRIN 索引（`bet_records`/`balance_transactions` 的 `created_at`）改用 Prisma schema 原生 `@@index([...], type: Brin)` 語法直接宣告（非 v1.0 規劃稿的 raw SQL migration 附錄）。
+- 所有欄位/表名以 `@map`/`@@map` 對應 snake_case 實際 DB 欄位（Prisma model 欄位本身維持 camelCase）。
+- **雙實體 schema 檔**：`schema.prisma`（PostgreSQL，唯一權威來源）與 `schema.sqlite.prisma`（enum/Json 降級為 String，供無 Docker 環境快速開發）；Prisma 3+ 已移除 `provider = env(...)` 動態切換，故不採單一 schema + 條件 migration 的原規劃做法（詳見 02_TDD §1）。
 
 ---
 
@@ -84,18 +92,23 @@ erDiagram
 ```
 （其餘表結構詳見 §2 Prisma Schema，欄位以 Schema 為準。）
 
-### 1.1 表格清單（17 張）
+### 1.1 表格清單（18 個邏輯分組／實際 20 個 Prisma model，2 組各含 2 個關聯 model）
 | # | 表 | 職責 | # | 表 | 職責 |
 |---|---|---|---|---|---|
 | 1 | User | 帳號、餘額(樂觀鎖)、角色、封鎖 | 10 | LoginLog | 登入紀錄（IP/UA/結果） |
 | 2 | RefreshToken | 旋轉式 refresh、重用偵測 | 11 | ChatMessage | 聊天（7 天保留） |
 | 3 | BalanceTransaction | 全帳異動流水（永久） | 12 | LeaderboardSnapshot | 每日 Top100 快照（永久） |
-| 4 | BetRecord | 下注/賠付明細（永久） | 13 | DailyTask | 任務模板池 |
+| 4 | BetRecord | 下注/賠付明細（永久）；★`gameType` 現含 5 種（SLOT/ROULETTE/DRAGON_GATE/HIGH_LOW/BLACKJACK） | 13 | DailyTask | 任務模板池 |
 | 5 | Charm | 護符模板（效果 JSON） | 14 | UserDailyProgress | 玩家每日任務進度 |
 | 6 | UserCharm | 玩家持有/裝備狀態 | 15 | AdminAuditLog | 後台操作審計（永久） |
 | 7 | Jackpot | 單行獎池（樂觀鎖，永久） | 16 | IllegalPacketLog | 非法封包/簽章失敗紀錄 |
 | 8 | JackpotHistory | 派彩歷史（永久） | 17 | Announcement | 公告/活動 |
-| 9 | GiftCode（+GiftCodeRedemption） | 兌換碼與核銷 | 18 | Achievement / UserAchievement | 成就 |
+| 9 | GiftCode（+GiftCodeRedemption） | 兌換碼與核銷 | 18 | Achievement / UserAchievement | 成就（種子 12 個，見 seed.ts） |
+
+> ★M29（射龍門/High-Low/Blackjack）**未新增任何表**：三款新遊戲的下注/結算明細全部沿用
+> `BetRecord.detail`（Json），依 `gameType` 區分形狀；多步驟回合（HIGH_LOW/BLACKJACK）開局即寫入
+> `status: "OPEN"`，後續動作更新同一筆記錄，結算後改為 `SETTLED`/`AUTO_SETTLED`/`FORFEITED`
+> （孤兒回合，見 §4、01_GDD §8.4）。
 
 ---
 
@@ -103,17 +116,18 @@ erDiagram
 
 ```prisma
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-arm64-openssl-3.0.x"]   // ★Pi 4 arm64 runtime
 }
 
 datasource db {
-  provider = "postgresql"          // dev 環境可切 "sqlite"
-  url      = env("DATABASE_URL")
+  provider = "postgresql"          // dev 可用獨立的 schema.sqlite.prisma 檔案切換（見 §0；
+  url      = env("DATABASE_URL")   // Prisma 3+ 已移除 provider=env() 動態切換）
 }
 
 // ─────────────────────────── Enums ───────────────────────────
 enum Role            { PLAYER ADMIN }
-enum GameType        { SLOT ROULETTE }
+enum GameType        { SLOT ROULETTE DRAGON_GATE HIGH_LOW BLACKJACK }   // ★後三者為 M29 新增
 enum TxType          { BET PAYOUT DAILY_REWARD TASK_REWARD GIFT_CODE ADMIN_ADJUST JACKPOT REFUND }
 enum CharmType       { WEIGHT RULE CONDITIONAL PITY BONUS }
 enum CharmRarity     { COMMON RARE EPIC LEGENDARY }
@@ -188,6 +202,7 @@ model BalanceTransaction {
 
   @@index([userId, createdAt])
   @@index([type, createdAt])
+  @@index([createdAt], map: "balance_tx_created_brin", type: Brin)   // 原生語法，見 §3 說明
   @@map("balance_transactions")
 }
 
@@ -198,9 +213,17 @@ model BetRecord {
   amount         BigInt
   payout         BigInt   @default(0)
   detail         Json
-  // SLOT: { reels: ["CHERRY","LEMON","LUCKY7"], charmsUsed: ["clover_boost"], pityActive: false, luckySymbol: "CLOVER" }
-  // ROULETTE: { roundId: "xxx", bets: [{ type: "RED", amount: 50 }] }
-  roundId        String?                                 // 輪盤回合
+  // SLOT:        { reels: ["CHERRY","LEMON","LUCKY7"], charmsUsed: ["clover_boost"], pityActive: false, luckySymbol: "CLOVER" }
+  // ROULETTE:    { roundId: "xxx", bets: [{ type: "RED", amount: 50 }] }
+  // ★DRAGON_GATE:{ status: "OPEN"|"SETTLED"|"FORFEITED", doors: [7,11], gap: 3,
+  //                oddsMode: "TIER_11", multiplier: 3.3, thirdCard: 9, outcome: "WIN" }
+  // ★HIGH_LOW:   { status: "OPEN"|"SETTLED"|"FORFEITED"|"AUTO_SETTLED", pot: 200,
+  //                streak: 2, baseCard: 8, outcome: "CASHOUT" }
+  // ★BLACKJACK:  { status: "OPEN"|"SETTLED"|"AUTO_SETTLED", playerCards: [...],
+  //                dealerCards: [...], doubled: false, outcome: "BLACKJACK" }
+  // 多步驟回合（HIGH_LOW/BLACKJACK）開局即寫入 status="OPEN"，結算時更新同一筆記錄；
+  // 孤兒回合（逾時未完成）規則見 01_GDD §8.4、docs/04_API_SPEC.md 對應章節。
+  roundId        String?                                 // 輪盤回合；★DRAGON_GATE/HIGH_LOW/BLACKJACK 的回合 ID 亦共用此欄位
   serverSeedHash String                                  // provably-fair 預留
   createdAt      DateTime @default(now())
   user           User     @relation(fields: [userId], references: [id])
@@ -208,7 +231,7 @@ model BetRecord {
   @@index([userId, createdAt])
   @@index([gameType, createdAt])
   @@index([roundId])
-  // migration 補：CREATE INDEX ... USING BRIN (created_at) — 物化視圖刷新用
+  @@index([createdAt], map: "bet_records_created_brin", type: Brin)   // 原生語法，見 §3 說明
   @@map("bet_records")
 }
 
@@ -457,12 +480,25 @@ CREATE MATERIALIZED VIEW leaderboard_daily AS
 CREATE UNIQUE INDEX leaderboard_daily_uid ON leaderboard_daily(user_id);
 -- weekly / total 同構，total 直接以 users.balance 排序建視圖
 
--- BRIN 索引：壓低視圖刷新與歷史查詢成本
-CREATE INDEX bet_records_created_brin ON bet_records USING BRIN (created_at);
-CREATE INDEX balance_tx_created_brin  ON balance_transactions USING BRIN (created_at);
-
--- 種子資料：jackpot 單行
+-- 種子資料：jackpot 單行（seed.ts 亦以 upsert 雙保險）
 INSERT INTO jackpot (id, pool, version) VALUES (1, 0, 0) ON CONFLICT DO NOTHING;
+```
+
+> ★BRIN 索引（`bet_records`/`balance_transactions` 的 `created_at`）實作時改為 Prisma schema
+> 原生 `@@index([...], type: Brin)`（見 §2），不再需要本附錄的 raw SQL——這點與 v1.0 規劃不同。
+
+### 3.1 實際 Migration 歷史
+
+| Migration | 內容 |
+|---|---|
+| `20260612_init` | 初始 schema：17 個邏輯分組 / 20 個 model + 9 個 enum + BRIN ×2 + 物化視圖 ×3 + jackpot 種子行 |
+| `20260620_add_new_game_types` | ★M29：純新增 `GameType` enum 值（`ALTER TYPE "GameType" ADD VALUE 'DRAGON_GATE'/'HIGH_LOW'/'BLACKJACK'`），不影響既有資料列、不需要重寫資料表 |
+
+```sql
+-- 20260620_add_new_game_types/migration.sql（示範：列舉值的相容性新增寫法）
+ALTER TYPE "GameType" ADD VALUE 'DRAGON_GATE';
+ALTER TYPE "GameType" ADD VALUE 'HIGH_LOW';
+ALTER TYPE "GameType" ADD VALUE 'BLACKJACK';
 ```
 
 ---
@@ -476,3 +512,6 @@ INSERT INTO jackpot (id, pool, version) VALUES (1, 0, 0) ON CONFLICT DO NOTHING;
 | Gift Code 兌換 | 交易：`UPDATE gift_codes SET used_count=used_count+1 WHERE id=:id AND used_count<max_uses AND expires_at>now()` 檢查行數 → 寫 Redemption（unique 雙保險）→ credit | 條件更新 + 唯一鍵 |
 | 排行榜讀取 | 直查物化視圖 | 5 分鐘最終一致 |
 | 護符裝備 | 交易更新 UserCharm → 重編譯 loadout → 覆寫 Redis | 快取以 DB 為準重建 |
+| ★射龍門下注（M29） | `GETDEL` 原子讀出並清空 Redis 回合狀態（整回合唯一一次動錢操作）→ 單一 PG 交易：寫 BetRecord → debit → 中獎 credit | 原子操作（GETDEL）+ 條件更新，不需要鎖 |
+| ★High-Low/Blackjack 多步驟動作（M29） | 每個動作（deal/guess/continue/cash-out、deal/hit/stand/double）先搶 RoundLock（`SET NX PX` + Lua release-if-owner）→ 讀 Redis 回合狀態 → 更新狀態或進 PG 交易結算 | 單實例 Redis 鎖序列化 + 條件更新 |
+| ★孤兒回合清理（M29） | `abandoned-round.job.ts` 每 2 分鐘 SCAN 比對 Redis key 剩餘 TTL → 對逾時回合呼叫各遊戲 `resolveAbandoned()`（仍走同一把 RoundLock，不與即時請求互踩） | TTL 倒推不活躍 + 鎖互斥；明確不使用 REFUND（見 01_GDD §8.4） |

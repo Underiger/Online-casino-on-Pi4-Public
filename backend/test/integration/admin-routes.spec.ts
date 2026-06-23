@@ -32,6 +32,8 @@ function makeStubService(overrides: Partial<AdminService> = {}): AdminService {
     adjustBalance: vi.fn(async () => ({ newBalance: '1500', delta: '500' })),
     setBan: vi.fn(async (_a: string, userId: string) => ({ userId, banned: true })),
     getActiveAnnouncements: vi.fn(async () => ({ items: [] })),
+    requestTelegramReverify: vi.fn(async () => ({ requestId: 'req-1', expiresIn: 120 })),
+    getTelegramReverifyStatus: vi.fn(async () => ({ status: 'pending' as const })),
   };
   return { ...base, ...overrides } as unknown as AdminService;
 }
@@ -169,6 +171,71 @@ describe('admin routes：高危操作 reverifyToken 守衛', () => {
     });
     expect(res.statusCode).toBe(400);
     expect(res.json()).toMatchObject({ error: { code: 'VALIDATION_ERROR' } });
+  });
+});
+
+describe('admin routes：Telegram 2FA 推播路由', () => {
+  let app: FastifyInstance | null = null;
+  afterEach(async () => {
+    await app?.close();
+    app = null;
+  });
+
+  it('POST reverify-telegram：無 token → 401', async () => {
+    const ctx = await buildTestApp(makeStubService());
+    app = ctx.app;
+    const res = await app.inject({ method: 'POST', url: '/api/admin/totp/reverify-telegram' });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it('POST reverify-telegram：PLAYER 角色 → 403', async () => {
+    const ctx = await buildTestApp(makeStubService());
+    app = ctx.app;
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/admin/totp/reverify-telegram',
+      headers: { authorization: `Bearer ${ctx.playerToken}` },
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('POST reverify-telegram：ADMIN → 200，轉發至 service', async () => {
+    const service = makeStubService();
+    const ctx = await buildTestApp(service);
+    app = ctx.app;
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/admin/totp/reverify-telegram',
+      headers: { authorization: `Bearer ${ctx.adminToken}` },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ requestId: 'req-1', expiresIn: 120 });
+    expect(service.requestTelegramReverify).toHaveBeenCalledWith('admin1', expect.any(String));
+  });
+
+  it('GET reverify-telegram/:requestId：PLAYER 角色 → 403', async () => {
+    const ctx = await buildTestApp(makeStubService());
+    app = ctx.app;
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/admin/totp/reverify-telegram/req-1',
+      headers: { authorization: `Bearer ${ctx.playerToken}` },
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('GET reverify-telegram/:requestId：ADMIN → 200，轉發至 service', async () => {
+    const service = makeStubService();
+    const ctx = await buildTestApp(service);
+    app = ctx.app;
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/admin/totp/reverify-telegram/req-1',
+      headers: { authorization: `Bearer ${ctx.adminToken}` },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ status: 'pending' });
+    expect(service.getTelegramReverifyStatus).toHaveBeenCalledWith('admin1', 'req-1');
   });
 });
 

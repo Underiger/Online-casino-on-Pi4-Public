@@ -42,6 +42,18 @@ export interface CompiledVariant {
   table: ReelTable;
 }
 
+// ─────────────────────────── LUCK 護符（機率鎖軸） ───────────────────────────
+
+/**
+ * LUCK 型護符的編譯產物：不動權重，旋轉後若自然結果非任意三連，
+ * 依 triggerPercent 機率鎖定第三軸為 symbol（sampler.ts 套用，固定作用於第三軸）。
+ */
+export interface CompiledLuckRule {
+  symbol: SlotSymbol;
+  /** 觸發機率，0–100；rng(100) < triggerPercent 即觸發 */
+  triggerPercent: number;
+}
+
 // ─────────────────────────── 規則（RULE / PITY / BONUS 護符） ───────────────────────────
 
 /** BONUS 型護符：指定符號中獎時附加 Jackpot 點數 */
@@ -70,6 +82,8 @@ export interface CompiledLoadout {
   reels: ReelTables;
   /** key = CONDITIONAL 護符 code */
   variants: Record<string, CompiledVariant>;
+  /** LUCK 護符（依護符 code 排序，順序即觸發優先序：第一個命中即套用、不再往下滾） */
+  luckRules: CompiledLuckRule[];
   rules: CompiledRules;
   /** = WEIGHT_TABLE_VERSION（數值調參後舊快取自然失效） */
   version: number;
@@ -83,7 +97,7 @@ export interface CompiledLoadout {
  */
 export interface EquippedCharm {
   code: string;
-  type: 'WEIGHT' | 'RULE' | 'CONDITIONAL' | 'PITY' | 'BONUS';
+  type: 'WEIGHT' | 'RULE' | 'CONDITIONAL' | 'PITY' | 'BONUS' | 'LUCK';
   effect: unknown;
 }
 

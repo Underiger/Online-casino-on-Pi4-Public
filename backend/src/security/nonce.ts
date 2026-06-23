@@ -64,7 +64,7 @@ export function createReplayGuard(redis: Redis) {
       return result === 1;
     },
 
-    /** 登出 / 重新登入時重置（可選；seq 鍵也會隨 TTL 自然過期） */
+    /** register/login 時重置（auth.service.ts resetSequence），與 client 端歸零同步 */
     async resetSeq(userId: string): Promise<void> {
       await redis.del(`last_seq:${userId}`);
     },

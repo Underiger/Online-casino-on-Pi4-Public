@@ -30,7 +30,8 @@
 // ═══════════════════════════════════════════════════════════════════
 
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-arm64-openssl-3.0.x"]
 }
 
 datasource db {
@@ -48,6 +49,9 @@ enum Role {
 enum GameType {
   SLOT
   ROULETTE
+  DRAGON_GATE
+  HIGH_LOW
+  BLACKJACK
 }
 
 enum TxType {
@@ -59,6 +63,7 @@ enum TxType {
   ADMIN_ADJUST
   JACKPOT
   REFUND
+  GACHA
 }
 
 enum CharmType {
@@ -67,6 +72,7 @@ enum CharmType {
   CONDITIONAL
   PITY
   BONUS
+  LUCK
 }
 
 enum CharmRarity {
@@ -192,11 +198,19 @@ model BetRecord {
   amount   BigInt
   payout   BigInt   @default(0)
   detail   Json
-  // SLOT:     { reels: ["CHERRY","LEMON","LUCKY7"], charmsUsed: ["clover_boost"],
-  //             pityActive: false, luckySymbol: "CLOVER" }
-  // ROULETTE: { roundId: "xxx", bets: [{ type: "RED", amount: 50 }] }
+  // SLOT:        { reels: ["CHERRY","LEMON","LUCKY7"], charmsUsed: ["clover_boost"],
+  //                pityActive: false, luckySymbol: "CLOVER" }
+  // ROULETTE:    { roundId: "xxx", bets: [{ type: "RED", amount: 50 }] }
+  // DRAGON_GATE: { status: "OPEN"|"SETTLED"|"FORFEITED", doors: [7,11], gap: 3,
+  //                oddsMode: "TIER_11", multiplier: 3.3, thirdCard: 9, outcome: "WIN" }
+  // HIGH_LOW:    { status: "OPEN"|"SETTLED"|"FORFEITED"|"AUTO_SETTLED", pot: 200,
+  //                streak: 2, baseCard: 8, outcome: "CASHOUT" }
+  // BLACKJACK:   { status: "OPEN"|"SETTLED"|"AUTO_SETTLED", playerCards: [...],
+  //                dealerCards: [...], doubled: false, outcome: "BLACKJACK" }
+  // 多步驟回合（DRAGON_GATE/HIGH_LOW/BLACKJACK）開局即寫入 status="OPEN"，
+  // 結算時更新同一筆記錄；孤兒回合規則見 docs/04_API_SPEC.md 對應章節。
 
-  roundId        String?  @map("round_id") // 輪盤回合
+  roundId        String?  @map("round_id") // 輪盤回合；DRAGON_GATE/HIGH_LOW/BLACKJACK 的回合 ID 亦共用此欄位
   serverSeedHash String   @map("server_seed_hash") // provably-fair 預留
   createdAt      DateTime @default(now()) @map("created_at")
   user           User     @relation(fields: [userId], references: [id])
@@ -225,6 +239,9 @@ model Charm {
   // RULE:        { wildSubstitute: true }
   // PITY:        { threshold: 10, bonus: 0.5 }
   // BONUS:       { onSymbol: "DIAMOND", jackpotPoints: 100 }
+  // LUCK:        { symbol: "BAR", luck: 65 }
+  //              機率觸發、鎖定第3軸覆寫為 symbol（不動權重，與 p³ 連線機率解耦）；
+  //              自然結果已是任意三連時不覆寫。luck 0–100 對應觸發機率（v1 線性 1:1）。
 
   enabled   Boolean     @default(true)
   createdAt DateTime    @default(now()) @map("created_at")

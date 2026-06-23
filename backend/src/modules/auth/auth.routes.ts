@@ -9,6 +9,7 @@
  */
 import type { FastifyPluginAsync } from 'fastify';
 import { parse } from '../../shared/validation.js';
+import { createReplayGuard } from '../../security/nonce.js';
 import { createAuthService } from './auth.service.js';
 import {
   LoginSchema,
@@ -19,10 +20,12 @@ import {
 } from './auth.types.js';
 
 const authRoutes: FastifyPluginAsync = async (app) => {
+  const replay = createReplayGuard(app.redis);
   const service = createAuthService({
     prisma: app.prisma,
     signAccessToken: (payload) => app.jwt.sign(payload),
     hmacKeys: app.hmacKeys, // M06：登入/refresh 協商輪換、logout 撤銷
+    resetSeq: (userId) => replay.resetSeq(userId), // register/login 重設 seq 門檻
   });
 
   const metaOf = (ip: string, userAgent: string | undefined): ClientMeta => ({
@@ -32,7 +35,7 @@ const authRoutes: FastifyPluginAsync = async (app) => {
 
   app.post('/register', async (request, reply) => {
     const body = parse(RegisterSchema, request.body);
-    const result = await service.register(body);
+    const result = await service.register(body, metaOf(request.ip, request.headers['user-agent']));
     return reply.code(201).send(result);
   });
 

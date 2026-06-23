@@ -27,12 +27,14 @@ import type { JwtPayload } from '../../plugins/auth.js';
 import type { HmacKeyStore } from '../../security/hmac.js';
 import { createUserService } from '../user/user.service.js';
 import type {
+  AuthUserInfo,
   ClientMeta,
   LoginInput,
   RegisterInput,
   RegisterResult,
   TokenPair,
 } from './auth.types.js';
+import type { User } from '@prisma/client';
 
 // ═════════════════ 純函式（單元測試直接覆蓋） ═════════════════
 
@@ -81,9 +83,17 @@ export interface AuthServiceDeps {
   signAccessToken: (payload: JwtPayload) => string;
   /** HMAC 會話金鑰管理（routes 層注入 app.hmacKeys）；測試注入假實作 */
   hmacKeys: Pick<HmacKeyStore, 'rotate' | 'revoke'>;
+  /**
+   * seq 防重放門檻重設（routes 層注入 ReplayGuard.resetSeq）；測試注入假實作。
+   * 只在 register/login 呼叫——這是 client 端 seq 計數器真正歸零的時刻
+   * （見 frontend stores/auth.ts clearPersisted）。refresh 不可呼叫：refresh
+   * 是背景靜默換 token，client 端 seq 未歸零，重設會把防重放保護窗從 7 天
+   * 縮短成 access token TTL（安全性退步）。
+   */
+  resetSeq: (userId: string) => Promise<void>;
 }
 
-export function createAuthService({ prisma, signAccessToken, hmacKeys }: AuthServiceDeps) {
+export function createAuthService({ prisma, signAccessToken, hmacKeys, resetSeq }: AuthServiceDeps) {
   const users = createUserService(prisma);
   const accessTtlSeconds = ttlToSeconds(env.JWT_ACCESS_TTL);
 
@@ -110,6 +120,16 @@ export function createAuthService({ prisma, signAccessToken, hmacKeys }: AuthSer
     } catch (err) {
       if (env.NODE_ENV === 'production') throw err;
       console.warn(`auth: redis 不可用，略過 HMAC 金鑰撤銷（${(err as Error).message}）`);
+    }
+  }
+
+  /** 新會話起點重設 seq 門檻，與 client 端歸零同步（見 AuthServiceDeps.resetSeq） */
+  async function resetSequence(userId: string): Promise<void> {
+    try {
+      await resetSeq(userId);
+    } catch (err) {
+      if (env.NODE_ENV === 'production') throw err;
+      console.warn(`auth: redis 不可用，略過 seq 門檻重設（${(err as Error).message}）`);
     }
   }
 
@@ -159,12 +179,23 @@ export function createAuthService({ prisma, signAccessToken, hmacKeys }: AuthSer
     return { accessToken, refreshToken, tokenType: 'Bearer', expiresIn: accessTtlSeconds };
   }
 
+  /** Prisma User → 前端 AuthUserInfo（balance: BigInt 須轉 string） */
+  function toAuthUserInfo(user: User): AuthUserInfo {
+    return {
+      id: user.id,
+      username: user.username,
+      role: user.role as JwtPayload['role'],
+      balance: user.balance.toString(),
+      avatarId: user.avatarId,
+    };
+  }
+
   return {
-    async register({ username, password }: RegisterInput): Promise<RegisterResult> {
+    async register({ username, password }: RegisterInput, meta: ClientMeta): Promise<RegisterResult> {
       const passwordHash = await hashPassword(password);
+      let user: User;
       try {
-        const user = await users.createPlayer({ username, passwordHash });
-        return { userId: user.id, username: user.username };
+        user = await users.createPlayer({ username, passwordHash });
       } catch (err) {
         // DB unique 約束為準（先查再建有 TOCTOU 競態）
         if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
@@ -172,9 +203,15 @@ export function createAuthService({ prisma, signAccessToken, hmacKeys }: AuthSer
         }
         throw err;
       }
+      await writeLoginLog(user.id, username, meta, 'SUCCESS');
+      // 註冊即登入：開新旋轉鏈家族 + 協商 HMAC 會話金鑰，與 login 行為一致
+      const pair = await issueTokenPair(user.id, user.role as JwtPayload['role'], randomUUID());
+      const hmacKey = await negotiateHmacKey(user.id);
+      await resetSequence(user.id);
+      return { ...pair, hmacKey, user: toAuthUserInfo(user) };
     },
 
-    async login({ username, password }: LoginInput, meta: ClientMeta): Promise<TokenPair> {
+    async login({ username, password }: LoginInput, meta: ClientMeta): Promise<RegisterResult> {
       const user = await users.findByUsername(username);
       if (!user) {
         await writeLoginLog(null, username, meta, 'WRONG_PASSWORD');
@@ -194,7 +231,8 @@ export function createAuthService({ prisma, signAccessToken, hmacKeys }: AuthSer
       // 每次登入開新旋轉鏈家族 + 協商 HMAC 會話金鑰（02_TDD §5.2 步驟 1–3）
       const pair = await issueTokenPair(user.id, user.role as JwtPayload['role'], randomUUID());
       const hmacKey = await negotiateHmacKey(user.id);
-      return { ...pair, hmacKey };
+      await resetSequence(user.id);
+      return { ...pair, hmacKey, user: toAuthUserInfo(user) };
     },
 
     async refresh(rawToken: string): Promise<TokenPair> {

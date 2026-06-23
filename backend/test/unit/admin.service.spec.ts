@@ -445,6 +445,13 @@ describe('admin.service: 2FA 驗證與重驗', () => {
     await expect(service.validate2fa('a1', '123456')).rejects.toBeInstanceOf(ForbiddenError);
     await expect(service.reverify('a1', '123456')).rejects.toBeInstanceOf(ForbiddenError);
   });
+
+  it('Telegram 2FA 未設定（測試環境 TELEGRAM_BOT_TOKEN/CHAT_ID 皆空）→ 拒絕推播請求', async () => {
+    const { service } = setup([{ id: 'a1', role: 'ADMIN', username: 'admin' }]);
+    await expect(service.requestTelegramReverify('a1', '1.2.3.4')).rejects.toBeInstanceOf(
+      ForbiddenError,
+    );
+  });
 });
 
 // ═════════════════ 玩家管理 ═════════════════

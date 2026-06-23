@@ -70,6 +70,10 @@ interface GameItem {
 const games: GameItem[] = [
   { name: '老虎機', icon: '🎰', route: '/slot', desc: '轉動滾輪，博取大獎！' },
   { name: '輪盤', icon: '🎡', route: '/roulette', desc: '全服同場，輪盤對決！' },
+  { name: '射龍門', icon: '🚪', route: '/dragon-gate', desc: '開門猜大小，賠率隨門寬浮動！' },
+  { name: '猜高低', icon: '🃏', route: '/high-low', desc: '猜對連續加倍，連勝上限 5 次！' },
+  { name: '二十一點', icon: '🂡', route: '/blackjack', desc: '比點數大小，天生 Blackjack 賠 3:2！' },
+  { name: '護符扭蛋', icon: '🥚', route: '/gacha', desc: '抽護符強化老虎機，十連保底稀有！' },
   { name: '排行榜', icon: '🏆', route: '/leaderboard', desc: '頂尖玩家爭霸' },
   { name: '個人頁', icon: '👤', route: '/profile', desc: '成就、護符、交易紀錄' },
 ];
@@ -79,7 +83,10 @@ const games: GameItem[] = [
   <div class="lobby">
     <!-- 頂部導航 -->
     <header class="header">
-      <div class="brand">🎰 Virtual Casino</div>
+      <div class="header-left">
+        <RouterLink to="/" class="back-btn" aria-label="返回選擇頁">← 選擇頁</RouterLink>
+        <div class="brand">🎰 Virtual Casino</div>
+      </div>
       <div class="header-right">
         <CoinDisplay />
         <span class="username">{{ auth.user?.username }}</span>
@@ -143,6 +150,23 @@ const games: GameItem[] = [
   position: sticky;
   top: 0;
   z-index: 100;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.back-btn {
+  color: rgba(255, 255, 255, 0.7);
+  text-decoration: none;
+  font-size: 0.85rem;
+  transition: color 0.2s;
+}
+
+.back-btn:hover {
+  color: #ffd700;
 }
 
 .brand {

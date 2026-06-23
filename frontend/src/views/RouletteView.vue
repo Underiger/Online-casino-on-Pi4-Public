@@ -3,7 +3,7 @@
 
     <!-- ── Header ─────────────────────────────────────────────────────────── -->
     <header class="rv-header">
-      <RouterLink class="back-btn" to="/" aria-label="返回大廳">
+      <RouterLink class="back-btn" to="/casino" aria-label="返回大廳">
         ← 大廳
       </RouterLink>
       <span class="rv-title">歐式輪盤</span>

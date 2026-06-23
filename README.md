@@ -1,7 +1,6 @@
 # Virtual Casino Sandbox
 
-虛擬賭場沙盒（純娛樂、無真錢交易），可部署於 **Raspberry Pi 4 4GB**。
-Monorepo 採 **npm workspaces**，技術棧：
+虛擬賭場沙盒（純娛樂、無真錢交易）。Monorepo 採 **npm workspaces**，技術棧：
 
 | 層 | 技術 |
 |---|---|
@@ -10,34 +9,8 @@ Monorepo 採 **npm workspaces**，技術棧：
 | 共用 | `packages/shared` — 前後端共用 DTO / Socket 事件 / Enum（單一真值來源）|
 | 資料 | PostgreSQL 16（dev 亦可用 SQLite）+ Redis 7 |
 
-完整設計文件見 `01to05/`（GDD / TDD / DATABASE_DESIGN / FOLDER_STRUCTURE / MILESTONES）。
-
----
-
-## 功能特色
-
-### 遊戲
-
-| 遊戲 | 說明 |
-|------|------|
-| 老虎機 | 5×3 捲軸、8 種像素風格符號（PNG 去背）、機台外觀疊層、拉桿動畫 280ms、護符（Charm）加成、Jackpot 池、連敗保底 |
-| 歐式輪盤 | 多人即時 WebSocket 房間、支援直注 / 外注 / 分注等 12 種下法 |
-
-### 系統
-
-- **帳戶**：JWT 雙 Token（Access 15m + Refresh 7d）、TOTP 兩步驟驗證（管理後台）
-- **錢包**：樂觀鎖防超額扣款、BullMQ 序列化防競態
-- **排行榜**：PostgreSQL Materialized View，每 5 分鐘刷新
-- **成就 / 每日任務**：12 種成就、每日登入與任務獎勵
-- **聊天室**：Socket.IO 即時聊天、洗頻偵測、管理員禁言
-- **管理後台**：2FA 登入、玩家管理、異常偵測（WIN_RATE / NET_WIN_OUTLIER）、禮品碼、公告
-- **可驗證公平性**：每局 `serverSeedHash = sha256(rngBytes(32))`，記錄於資料庫
-
-### 效能（k6 壓測）
-
-- P95 回應時間 < 500ms（老虎機 spin / 輪盤下注混合場景，100 VU × 5 分鐘）
-- RTP 91.5%（1,000 萬次 Monte Carlo 模擬，驗證區間 90%–94%）
-- 376 後端單元 + 整合測試，無需 PostgreSQL / Redis 即可執行
+完整設計文件見 `docs/`（GDD / TDD / DATABASE_DESIGN / FOLDER_STRUCTURE / MILESTONES）。
+**開發前必讀 `docs/PROJECT_STATE.md`** 了解目前進度。
 
 ---
 
@@ -49,7 +22,7 @@ Monorepo 採 **npm workspaces**，技術棧：
 ├── admin-frontend/     # 管理後台 Vue 3 SPA（dev: http://localhost:5174/admin/）
 ├── packages/shared/    # 前後端共用 TS 型別
 ├── scripts/            # 金鑰產生、部署、備份等腳本
-├── 01to05/             # 設計文件（GDD / TDD / DB 設計 / 結構 / Milestones）
+├── docs/               # 設計文件 + PROJECT_STATE.md
 ├── docker-compose.yml  # 開發用 PostgreSQL + Redis
 └── .env.example        # 環境變數範本
 ```
@@ -91,7 +64,7 @@ docker compose ps        # 確認兩個服務皆 healthy
 資料以 named volume（`pgdata` / `redisdata`）持久化，`docker compose down` 不會清除資料；
 要完全重置請用 `docker compose down -v`。
 
-### 4. 資料庫 Migration
+### 4. 資料庫 Migration（M02 之後可用）
 
 ```bash
 npm run -w backend prisma:migrate   # = prisma migrate dev
@@ -108,7 +81,7 @@ npm run dev              # 同時啟動 backend + frontend + admin-frontend
 
 ```bash
 npm run dev:backend      # http://localhost:3000   （GET / → { "ok": true }）
-npm run dev:frontend     # http://localhost:5173
+npm run dev:frontend     # http://localhost:5173   （顯示 "Frontend works"）
 npm run dev:admin        # http://localhost:5174/admin/
 ```
 
@@ -132,8 +105,10 @@ npm run format           # Prettier 全專案格式化
 
 ## 開發約定（重點）
 
-- **嚴禁 `Math.random`**：全專案唯一亂數出口為 `backend/src/security/csprng.ts`，ESLint `no-restricted-properties` 會直接報 error。
+- **嚴禁 `Math.random`**：全專案唯一亂數出口為 `backend/src/security/csprng.ts`（M06 建立），
+  ESLint `no-restricted-properties` 會直接報 error。
 - **餘額只能經 wallet 模組**：禁止在其他模組直接 `prisma.user.update` 改餘額，ESLint 已設規則攔截。
+- 每完成一個 Milestone：更新 `docs/PROJECT_STATE.md` → 附建議 Commit Message → 停下等待確認。
 
 ## Docker（後端映像）
 
@@ -179,7 +154,7 @@ nano .env.production
 #   DATABASE_URL=postgresql://casino:PASSWORD@postgres:5432/casino_prod?schema=public
 #   REDIS_URL=redis://redis:6379
 # 然後執行：
-bash scripts/gen-secrets.sh    # 自動填入 JWT_SECRET / AES_256_GCM_KEY / ADMIN_INITIAL_PASSWORD
+bash scripts/gen-secrets.sh .env.production    # 自動填入 JWT_SECRET / AES_256_GCM_KEY / ADMIN_INITIAL_PASSWORD
 ```
 
 #### 2. 產生 TLS 憑證
@@ -291,11 +266,15 @@ bash scripts/deploy.sh
 ## 測試指令
 
 ```bash
-# 執行全部後端單元 + 整合測試（376 條，無需 PG/Redis）
+# 執行全部後端單元 + 整合測試（537 條，無需 PG/Redis）
 npm test
 
 # 產生覆蓋率報告（輸出至 backend/coverage/）
 npm run test:coverage
+
+# 部署冒煙測試（對已部署堆疊驗收 Nginx→後端→PG/Redis→HMAC→Socket.IO 關鍵路徑）
+# 預設打 https://localhost（自簽憑證略過 TLS 驗證）；正式憑證請設 SMOKE_TLS_VERIFY=1
+npm run test:smoke
 
 # RTP 蒙地卡羅模擬（1000 萬次，驗證 RTP ∈ [90%, 94%]）
 npm run rtp:simulate
@@ -325,9 +304,7 @@ npm run -w backend audit:balance
 
 | 項目 | 說明 |
 |------|------|
-| 聊天室自動禁言 | 洗頻偵測（`RATE_LIMIT_BURST`/`RATE_LIMIT_MINUTE`）已實作，但違規後自動禁言尚未完成 |
-| 禁言自動解除 | `setMute` 已記錄 `mutedUntil`，但自動解除的 BullMQ 延遲任務尚未排程 |
-| Pi 4 真機端對端 | 部署章節各驗收項待實機驗證 |
+| Pi 4 真機端對端 | 已提供 `npm run test:smoke` 對部署堆疊（Nginx → 後端 → PG/Redis → HMAC → Socket.IO）做關鍵路徑冒煙測試；真機端對端仍待 arm64 硬體 + 正式憑證實跑 |
 | Provably Fair | `serverSeedHash` 已落庫（`sha256(rngBytes(32))`），但客戶端驗證介面尚未對外開放 |
 | Roulette HMAC | 輪盤下注目前透過 Socket.IO payload 攜帶 HMAC，HTTP 備援路由不存在 |
 | 聊天 URL 過濾 | 以正則過濾 `https?://` 及裸域名，不包含短網址 / 協定相對網址 |
@@ -338,7 +315,7 @@ npm run -w backend audit:balance
 
 本專案以教育與娛樂為目的，採閉源維護。如需回報問題或提交改善建議：
 
-1. **閱讀文件**：先閱讀 `01to05/05_MILESTONES.md`（功能進度）及 `01to05/02_TDD.md`（技術設計）。
+1. **閱讀文件**：先閱讀 `docs/PROJECT_STATE.md`（進度與已知問題）及 `docs/04_API_SPEC.md`（API 規格）。
 2. **保持 Server Authoritative**：所有遊戲邏輯必須由後端決定，Client 不得影響任何遊戲結果。
 3. **餘額鐵律**：任何涉及 `users.balance` 的修改，必須透過 `backend/src/modules/wallet/wallet.service.ts`，ESLint 規則會自動攔截違規。
 4. **不使用 `Math.random()`**：全專案唯一亂數出口為 `backend/src/security/csprng.ts`。

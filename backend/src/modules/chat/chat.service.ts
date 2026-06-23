@@ -6,7 +6,7 @@
  *   2. 使用者狀態驗證：已封禁（user.banned）/ 已禁言（user.muted）
  *   3. 頻率限制：1 則/2 秒（burst 桶）+ 10 則/60 秒（分鐘桶），
  *      直接重用 plugins/rate-limit.ts 導出的 TOKEN_BUCKET_LUA
- *   4. 落庫：ChatMessage（PG 保留 7 天，排程清理留 M26）
+ *   4. 落庫：ChatMessage（PG 保留 7 天，由 jobs/chat-cleanup.job.ts 每日排程清理）
  *   5. Redis List 緩存：`chat:history`，lpush + ltrim(0,199) + EX 7 天
  *      ── 新連線推送時從 Redis 讀取，減少 DB 查詢；Redis miss 時從 DB 補讀重建
  *   6. 系統訊息發送（jackpot 觸發等，userId = null）
@@ -29,6 +29,8 @@ export const CHAT_HISTORY_SIZE = 200;
 export const CHAT_HISTORY_TTL_SECONDS = 7 * 24 * 60 * 60;
 /** 訊息最大長度（與 shared CHAT_MAX_LENGTH 一致） */
 export const CHAT_MAX_LENGTH = 200;
+/** DB 持久層保留天數（與 Redis history 快取的 7 天展示窗一致；由 chat-cleanup job 排程清理） */
+export const CHAT_DB_RETENTION_DAYS = 7;
 
 /** 點對點桶：capacity=1, rate=0.5（即最多 1 則/2s） */
 const BURST_CAPACITY = 1;
@@ -316,7 +318,22 @@ export function createChatService(deps: ChatServiceDeps) {
     return payload;
   }
 
-  return { sendMessage, sendSystemMessage, getHistory, sanitize, checkRateLimit };
+  // ── DB 保留清理（jobs/chat-cleanup.job.ts 每日排程呼叫）──
+
+  /**
+   * 刪除超過保留天數的 ChatMessage（系統訊息與玩家訊息一視同仁）。
+   * 純粹依 createdAt 範圍刪除，不碰 Redis `chat:history`——後者本身已有獨立的
+   * 7 天 TTL 會自然過期，兩者保留窗一致但互不依賴（任一邊故障不影響另一邊）。
+   */
+  async function cleanupOldMessages(retentionDays = CHAT_DB_RETENTION_DAYS): Promise<number> {
+    const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
+    const { count } = await prisma.chatMessage.deleteMany({
+      where: { createdAt: { lt: cutoff } },
+    });
+    return count;
+  }
+
+  return { sendMessage, sendSystemMessage, getHistory, sanitize, checkRateLimit, cleanupOldMessages };
 }
 
 export type ChatService = ReturnType<typeof createChatService>;

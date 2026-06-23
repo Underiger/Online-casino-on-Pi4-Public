@@ -20,6 +20,9 @@ import { registerDailyJobs } from './modules/daily/daily.jobs.js';
 import { registerLeaderboardJobs } from './jobs/leaderboard-refresh.job.js';
 import { registerMonitorScanJob } from './jobs/monitor-scan.job.js';
 import { registerModerationJobs } from './jobs/timed-mute.job.js';
+import { registerAbandonedRoundJob } from './jobs/abandoned-round.job.js';
+import { registerChatCleanupJob } from './jobs/chat-cleanup.job.js';
+import { registerTelegramPollJob } from './jobs/telegram-2fa-poll.job.js';
 import { env } from './config/env.js';
 
 const SHUTDOWN_TIMEOUT_MS = 10_000;
@@ -46,6 +49,16 @@ export async function startServer(): Promise<void> {
 
   // 限時禁言自動解除（BullMQ 延遲任務）+ 聊天洗頻自動禁言的排程出口（app.scheduleTimedUnmute）
   await registerModerationJobs(app);
+
+  // High-Low / Blackjack 孤兒回合清理（每 2 分鐘掃描，5 分鐘無動作即強制結算）
+  await registerAbandonedRoundJob(app);
+
+  // 聊天室 DB 保留清理（每日 04:30 Asia/Taipei，刪除超過 7 天的 ChatMessage）
+  await registerChatCleanupJob(app);
+
+  // Admin 高危操作 2FA Telegram 推播——短輪詢(2s) getUpdates；
+  // 未設定 TELEGRAM_BOT_TOKEN/TELEGRAM_ADMIN_CHAT_ID 時內部 no-op
+  await registerTelegramPollJob(app);
 
   let closing = false;
   const shutdown = (signal: NodeJS.Signals): void => {

@@ -2,6 +2,103 @@
 
 > 每個 Milestone 完成後更新；所有開發前必讀。模板出自 04_FOLDER_STRUCTURE.md §8。
 
+## M29：莊家 vs 閒家新遊戲——射龍門 / High-Low / Blackjack（2026-06-20）
+
+使用者規劃四大類新遊戲擴充（其餘三類：多人桌局 PvP、麻將、Solitaire 留待後續），本里程碑
+完成第一類「莊家 vs 閒家」三款，全部沿用 Slot 已驗證的「HTTP 同步請求 + 單一 Prisma 交易 +
+wallet.debit/credit + HMAC + 限流 + 異常偵測」模式：
+
+- **射龍門 Dragon Gate**（`backend/src/modules/dragon-gate/`）：開門牌（CSPRNG 洗牌，相鄰/相同
+  點數自動重開門）→ 攤開賠率 → 下注 → 結算。整回合唯一動錢操作（`bet`）用 `GETDEL` 原子 claim，
+  不需要鎖。賠率支援 `TIER_3`/`TIER_11` 雙模式（`DRAGON_GATE_ODDS_MODE` 開關，
+  `config/constants.ts`）。**Monte Carlo 模擬抓到一個真實的校準錯誤**：`TIER_3` 桶內倍率原本用
+  「未加權平均」推導，但兩張門牌的 rank 差距對應牌組數是 `(13-d)` 組，小 gap 出現頻率遠高於大
+  gap，未加權版本實測 RTP 只有 ~87.7%（偏離目標 92% 達 4pp+）；改成「出現次數加權平均」後
+  Monte Carlo 複測兩種模式都收斂到 92% ± 4pp。
+- **High-Low / Blackjack**（`backend/src/modules/{high-low,blackjack}/`）：規則港自使用者自己的
+  `Underiger/pokergame` repo（`games/{high_low,blackjack}.py` 純邏輯，逐行對應）。多步驟回合
+  （High-Low：deal/guess/continue/cash-out；Blackjack：deal/hit/stand/double）新增
+  `backend/src/security/round-lock.ts`（單實例 Redis `SET NX PX` + Lua release-if-owner，仿
+  roulette leader lock 同款慣例，非正式 multi-node Redlock）序列化同一回合的併發動作，避免
+  read-modify-write 競態（補兩張牌、重複扣款）。
+- **孤兒回合清理**（`backend/src/jobs/abandoned-round.job.ts`，每 2 分鐘掃描，用 Redis key 剩餘
+  TTL 倒推「5 分鐘無動作」，不需要替 BetRecord 加 updatedAt 欄位）：依目前卡在的階段強制結算
+  （High-Low 卡在猜測階段沒收彩池、卡在收手/續押選擇階段強制視為收手；Blackjack 卡在玩家回合
+  強制視為停牌）。**明確不使用 REFUND**——這個設計約束來自 plan review 階段使用者的明確修正：
+  單純退款會讓玩家在看到不利局面時故意斷線換回全額退款，等於無限次免費重試；逾時結算永遠只能
+  等於玩家當下零成本就能選的選項，絕不變出比繼續玩更好的結果。
+- 新增 `backend/src/shared/cards.ts`（標準 52 張牌 + Fisher-Yates 洗牌，CSPRNG 注入）供三款
+  遊戲共用；`packages/shared/src/{cards,dto/dragon-gate.dto}.ts` 鏡像前端型別。
+- 射龍門已含完整前端（`DragonGateView.vue` + `stores/dragon-gate.ts`）；High-Low/Blackjack
+  前端待後續補上。
+- 測試：新增 141 條（payout 純邏輯 + service 狀態機 + round-lock 併發 + 孤兒回合結算 + 射龍門
+  RTP Monte Carlo + 路由整合），總計 531 條全數通過；既有測試無回歸（除一支跟本次改動無關、
+  此前已確認的既有環境性 Prisma/SQLite 測試環境問題）。
+
+## M29 後續修補：補上 DIAMOND_TRIPLE / WILD_TRIPLE 成就觸發（2026-06-20）
+
+整理設計文件時發現 `seed.ts` 種子的 12 個成就中，`DIAMOND_TRIPLE`（鑽石恆久遠）與
+`WILD_TRIPLE`（狂野之夜）只有定義、從未在任何地方接線——對照其餘 10 個觸發點
+（FIRST_TRIPLE/LUCKY7_TRIPLE/JACKPOT_WINNER/LOGIN_STREAK_7/SPIN_1000/ROULETTE_100/
+CHATTERBOX/CHARM_COLLECT_6/12/NET_WIN_10000），這兩個玩家永遠拿不到。
+
+- `backend/src/modules/slot/slot.routes.ts`：在既有的三連判定區塊（`isTriple &&
+  outcome.payout > 0`）內，仿 `LUCKY7_TRIPLE`（`reels[0] === 'LUCKY7'`）同款模式，
+  新增 `reels[0] === 'DIAMOND'` → `DIAMOND_TRIPLE`、`reels[0] === 'WILD'` →
+  `WILD_TRIPLE` 兩個觸發呼叫。
+- 與既有三連成就同款限制：僅自然三連（reels 三格literal 相同）才觸發，Wild 替代
+  湊成的三連不算（FIRST_TRIPLE/LUCKY7_TRIPLE 原本就是這個語義，未額外引入新的不一致）。
+- 範圍說明：成就子系統（`achievement.service.ts` 與其在各路由的接線）目前無任一
+  單元測試覆蓋（`backend/test/` 內搜尋不到 "achievement"），這是更早就存在、本次未
+  處理的既有缺口；本次僅比照既有三個三連觸發點的寫法新增兩行，未額外引入新的未測風險。
+- `npm run lint`/`typecheck` 通過；`npm test` 537 條全綠（無新增測試，理由同上）。
+- 同步校正 `05_MILESTONES.md` M20 行的對應已知缺口記錄。
+
+## M29 後續修補：補上聊天室訊息 DB 清理 job（2026-06-20）
+
+整理 01to05 設計文件對齊實作進度時發現的落差：`chat.service.ts` 註解原寫「PG 保留 7 天，
+排程清理留 M26」，但 M26 實際內容是 RTP 模擬與負載測試，這個 TODO 從未被排進任何里程碑，
+`chat_messages` 表會無限增長（Redis `chat:history` 快取本身已有獨立的 7 天 TTL 會自然過期，
+缺的只是 DB 持久層的清理）：
+
+- `backend/src/modules/chat/chat.service.ts`：新增 `cleanupOldMessages(retentionDays = 7)`——
+  依 `createdAt` 範圍 `deleteMany`，回傳刪除筆數；新增 `CHAT_DB_RETENTION_DAYS` 常數；
+  純粹依時間範圍刪除，不碰 Redis history（兩者保留窗一致但互不依賴，任一邊故障不影響另一邊）。
+- 新增 `backend/src/jobs/chat-cleanup.job.ts`（補上 v1.0 規劃稿原本就設計、但從未落地的
+  `chat-cleanup.job.ts`）：每日 **04:30 Asia/Taipei** repeatable cron（與 daily-reset 00:00、
+  leaderboard 每日快照錯峰，符合 02_TDD §6.5 排程紀律），processor 工廠與 BullMQ 接線分離
+  （`createChatCleanupProcessor`，fake deps 可直接單元測試）。
+- `backend/src/server.ts`：`registerChatCleanupJob(app)` 接線於 `registerAbandonedRoundJob`
+  之後。
+- 測試：新增 6 條（`chat.service.spec.ts` 的 `cleanupOldMessages` 3 條 + 新增
+  `chat-cleanup.job.spec.ts` 3 條），總計 537 條全數通過；`npm run lint`/`typecheck` 通過；
+  既有測試無回歸（同上，唯一失敗項為與本次改動無關的既有環境性問題）。
+- 同步校正 01to05 設計文件中兩處「DB 端尚無實際清理 job」的已知缺口記錄
+  （04_FOLDER_STRUCTURE.md §1、05_MILESTONES.md M17 行），並同步補上 02_TDD.md §3
+  jobs/ 清單裡的 `chat-cleanup.job.ts` 條目。
+
+## M28 後續修補（2026-06-16）
+
+v1.0.0 發布後的安全與驗收補強，無新里程碑：
+
+- **聊天洗頻自動禁言 + 限時禁言自動解除**（commit `3f0d512`）：原列為已知限制的兩項 backlog
+  已實作並補 +20 測試（共 376 條）。洗頻分鐘桶連續被擋達 5 次 / 60s → 自動限時禁言 5 分鐘
+  （`chat.service.ts` `AUTO_MUTE_THRESHOLD`/`chat.gateway.ts` `CHAT_FLOOD_MUTE_MINUTES`）；到期由 BullMQ
+  moderation queue 的 `timed-unmute` 任務以 Redis 期限標記做 supersession 防護自動解除
+  （`backend/src/jobs/timed-mute.job.ts` + `admin.releaseTimedMute`）。
+- **依賴 CVE 修補**（commits `156602a`/`439aacd`/`a37bd8d`/`b910f10`）：esbuild GHSA-gv7w-rqvm-qjhr、
+  ws CVE-2026-48779、form-data CVE-2026-12143 已透過 root `package.json` `overrides` 修補；詳見
+  `docs/0615_SECURITY_REPORT.md`。
+- **Pi 4 部署冒煙測試**：新增 `scripts/smoke-test.js`（`npm run test:smoke`），對部署堆疊驗收
+  Nginx /health → /api 反向代理 → 註冊（PG）→ 登入（Redis 金鑰）→ HMAC spin → Socket.IO WSS 關鍵路徑；
+  預設打 `https://localhost`（自簽略過 TLS 驗證，正式憑證設 `SMOKE_TLS_VERIFY=1`）。
+
+> **v1.0.0 tag**：原指向 `e0190b1`（M25 docs commit，誤置——早於真正的 v1.0.0 feat commit、M26/M27、
+> CVE 修補與本批補強），已重新指向本 release commit 並強制更新 **origin**。public repo 的 tag 依慣例由
+> 人工以 `gh api` 另行處理（公開版與私有 origin 已分歧 21/33，非鏡像）。
+
+---
+
 ## M28 完成內容（2026-06-14）
 
 ### 文件定稿與 v1.0.0 發布（05_MILESTONES M28）
@@ -52,15 +149,15 @@
 - [x] docs/PROJECT_STATE.md：進度 M28/M28、需求對照表、已知限制清單
 - [x] log.txt：追加完成記錄
 - [x] memory/project_state.md：同步更新至 M28 完成狀態
-- [ ] `git tag -a v1.0.0 -m "Release v1.0.0: 完整多人線上虛擬娛樂平台"` + `git push origin v1.0.0`（請手動執行）
-- [ ] Pi 4 真機最終冒煙測試（需 arm64 硬體 + 正式 Let's Encrypt 憑證）
+- [x] `git tag -a v1.0.0`（自誤置的 `e0190b1` 重新指向 release commit）+ `git push --force origin v1.0.0`（origin 已更新；public 由人工以 `gh api` 處理）
+- [ ] Pi 4 真機最終冒煙測試（需 arm64 硬體 + 正式 Let's Encrypt 憑證）— 冒煙腳本已備（`npm run test:smoke` / `scripts/smoke-test.js`），到貨後直接跑
 
 ---
 
 - 進度：M28 / M28（全部完成）
 - 資料庫 migration 版本：20260612_init（17 張表 + 9 enum + BRIN ×2 + 物化視圖 ×3 + jackpot 種子行）
 - API 狀態：infra ✅ / db-schema ✅ / app-skeleton ✅ / auth ✅ / api-spec ✅ / security ✅ / wallet ✅ / socket-base ✅ / frontend-skeleton ✅ / slot-core ✅ / slot-api ✅ / slot-frontend ✅ / roulette ✅ / jackpot ✅ / charm ✅ / daily ✅ / leaderboard ✅ / chat ✅ / achievement ✅ / admin ✅ / gift-code-redeem ✅ / records-query ✅ / admin-frontend ✅ / monitor ✅ / deploy-pipeline ✅ / rtp-simulation ✅ / loadtest ✅ / e2e-integration ✅ / security-drill ✅ / documentation ✅（M28）
-- 已知 Bug（minor，非 v1.0 阻塞項）：聊天洗頻自動禁言未實作（M27 演練建議）；timed-mute 自動解除 BullMQ 延遲任務未排程；Pi 4 真機端對端待補驗
+- 已知 Bug（minor，非 v1.0 阻塞項）：Pi 4 真機端對端待補驗（需 arm64 硬體 + 正式憑證；可用 `npm run test:smoke` 對部署堆疊做關鍵路徑冒煙）。聊天洗頻自動禁言 / 限時禁言自動解除已於 `3f0d512` 補實作（見上方「M28 後續修補」）
 - TODO：無
 - 最近 Commit 建議：`chore(release): v1.0.0`
 

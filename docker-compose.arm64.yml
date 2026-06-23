@@ -19,7 +19,7 @@ name: virtual-casino-sandbox-prod
 services:
   # ── PostgreSQL 16 ────────────────────────────────────────────────────────────
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16.7-alpine
     platform: linux/arm64
     container_name: casino-postgres
     restart: unless-stopped
@@ -43,20 +43,31 @@ services:
 
   # ── Redis 7 ──────────────────────────────────────────────────────────────────
   redis:
-    image: redis:7-alpine
+    image: redis:7.4.6-alpine
     platform: linux/arm64
     container_name: casino-redis
     restart: unless-stopped
+    # REDIS_PASSWORD 由 scripts/gen-secrets.sh 產生並注入 REDIS_URL。
+    # 缺值時 :? 讓 compose 直接報錯，避免 --requirepass "" 靜默停用 AUTH。
+    # REDISCLI_AUTH 供下方 healthcheck 的 redis-cli ping 自動認證（啟用 requirepass 後無此值會 NOAUTH）。
+    environment:
+      REDISCLI_AUTH: ${REDIS_PASSWORD:?REDIS_PASSWORD 未設定，請執行 bash scripts/gen-secrets.sh .env.production}
     # AOF 持久化確保 Jackpot 累積值、HMAC 會話金鑰等在重啟後不遺失
     # maxmemory 留 56 MB 餘裕給 OS overhead（mem_limit 256 MB）
+    # maxmemory-policy 必須為 noeviction：本 Redis 同時承載 BullMQ 工作佇列、Jackpot
+    #   INCRBY 累積值與會話/nonce 金鑰，allkeys-lru 會在達上限時靜默淘汰這些關鍵資料
+    #   （BullMQ 啟動時即警告 "Eviction policy ... should be noeviction"）。改為達上限時
+    #   寫入報錯（fail loud），保護財務與佇列資料不被默默丟棄。
     command:
       - redis-server
+      - --requirepass
+      - ${REDIS_PASSWORD:?REDIS_PASSWORD 未設定，請執行 bash scripts/gen-secrets.sh .env.production}
       - --appendonly
       - "yes"
       - --maxmemory
       - 200mb
       - --maxmemory-policy
-      - allkeys-lru
+      - noeviction
     volumes:
       - redisdata:/data
     mem_limit: 256m
@@ -93,13 +104,13 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      # node:20-alpine 內建 node，用最小開銷驗 GET /
+      # node:20-alpine 內建 node，用最小開銷驗 GET /healthz（見 backend/src/app.ts）
       test:
         - CMD
         - node
         - -e
         - |
-          require('http').get('http://localhost:3000/',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))
+          require('http').get('http://localhost:3000/healthz',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))
       interval: 15s
       timeout: 8s
       retries: 3
@@ -107,7 +118,7 @@ services:
 
   # ── Nginx 1.27（TLS 終止 + 靜態檔案 + 反向代理）────────────────────────────
   nginx:
-    image: nginx:1.27-alpine
+    image: nginx:1.27.4-alpine
     platform: linux/arm64
     container_name: casino-nginx
     restart: unless-stopped
@@ -153,9 +164,40 @@ services:
       - sh
       - -c
       - |
+        set -e
         echo "執行 prisma migrate deploy..."
         node_modules/.bin/prisma migrate deploy --schema=backend/prisma/schema.prisma
         echo "Migration 完成。"
+    env_file: .env.production
+    networks:
+      - internal
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles:
+      - migrate
+
+  # ── Prisma Seed Runner（profile:migrate，migration 之後執行；upsert 故可重複執行）──────
+  # 使用 deps build stage（含完整 devDependencies，包括 tsx）
+  # 執行：docker compose -f docker-compose.arm64.yml --profile migrate run --rm seed
+  seed:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      target: deps
+    platform: linux/arm64
+    container_name: casino-seed
+    working_dir: /app
+    volumes:
+      - ./backend/prisma:/app/backend/prisma:ro
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        echo "執行 prisma db seed..."
+        node_modules/.bin/tsx backend/prisma/seed.ts
+        echo "Seed 完成。"
     env_file: .env.production
     networks:
       - internal

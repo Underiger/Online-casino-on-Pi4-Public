@@ -85,7 +85,7 @@ model RefreshToken {
 model BalanceTransaction {
   id            String   @id @default(cuid())
   userId        String   @map("user_id")
-  type          String // enum TxType: BET | PAYOUT | DAILY_REWARD | TASK_REWARD | GIFT_CODE | ADMIN_ADJUST | JACKPOT | REFUND
+  type          String // enum TxType: BET | PAYOUT | DAILY_REWARD | TASK_REWARD | GIFT_CODE | ADMIN_ADJUST | JACKPOT | REFUND | GACHA
   delta         BigInt
   balanceBefore BigInt   @map("balance_before")
   balanceAfter  BigInt   @map("balance_after")
@@ -103,7 +103,7 @@ model BalanceTransaction {
 model BetRecord {
   id             String   @id @default(cuid())
   userId         String   @map("user_id")
-  gameType       String   @map("game_type") // enum GameType: SLOT | ROULETTE
+  gameType       String   @map("game_type") // enum GameType: SLOT | ROULETTE | DRAGON_GATE | HIGH_LOW | BLACKJACK
   amount         BigInt
   payout         BigInt   @default(0)
   detail         String // JSON 字串（SQLite 無 Json 型別）

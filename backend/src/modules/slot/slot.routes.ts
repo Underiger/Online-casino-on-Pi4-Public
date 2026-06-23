@@ -115,6 +115,12 @@ const slotRoutes: FastifyPluginAsync<SlotRoutesOptions> = async (app, opts) => {
       if (reels[0] === 'LUCKY7') {
         void achievement.tryUnlock(userId, 'LUCKY7_TRIPLE', achIo).catch(() => {});
       }
+      if (reels[0] === 'DIAMOND') {
+        void achievement.tryUnlock(userId, 'DIAMOND_TRIPLE', achIo).catch(() => {});
+      }
+      if (reels[0] === 'WILD') {
+        void achievement.tryUnlock(userId, 'WILD_TRIPLE', achIo).catch(() => {});
+      }
     }
     if (outcome.jackpotTriggered && outcome.jackpotPayout !== null) {
       void achievement.tryUnlock(userId, 'JACKPOT_WINNER', achIo).catch(() => {});

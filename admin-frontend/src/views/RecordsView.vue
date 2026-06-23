@@ -71,6 +71,7 @@
             <option value="ADMIN_ADJUST">管理員調整</option>
             <option value="JACKPOT">Jackpot</option>
             <option value="REFUND">退款</option>
+            <option value="GACHA">扭蛋</option>
           </select>
         </template>
 

@@ -27,6 +27,7 @@ export interface AdminMeRes {
   username: string;
   role: string;
   totpEnabled: boolean;
+  telegramEnabled: boolean;
 }
 
 export async function apiAdminMe(): Promise<AdminMeRes> {
@@ -53,6 +54,30 @@ export async function apiTotpValidate(code: string): Promise<ValidateRes> {
 
 export async function apiTotpReverify(totpCode: string): Promise<ReverifyRes> {
   const res = await http.post<ReverifyRes>('/admin/totp/reverify', { totpCode });
+  return res.data;
+}
+
+export interface TelegramReverifyStartRes {
+  requestId: string;
+  expiresIn: number;
+}
+
+export interface TelegramReverifyStatusRes {
+  status: 'pending' | 'approved' | 'denied' | 'expired';
+  reverifyToken?: string;
+}
+
+export async function apiTotpReverifyTelegramStart(): Promise<TelegramReverifyStartRes> {
+  const res = await http.post<TelegramReverifyStartRes>('/admin/totp/reverify-telegram');
+  return res.data;
+}
+
+export async function apiTotpReverifyTelegramStatus(
+  requestId: string,
+): Promise<TelegramReverifyStatusRes> {
+  const res = await http.get<TelegramReverifyStatusRes>(
+    `/admin/totp/reverify-telegram/${requestId}`,
+  );
   return res.data;
 }
 

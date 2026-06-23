@@ -9,6 +9,7 @@ export interface AdminUser {
   username: string;
   role: string;
   totpEnabled: boolean;
+  telegramEnabled: boolean;
 }
 
 export const useAdminAuthStore = defineStore('adminAuth', () => {

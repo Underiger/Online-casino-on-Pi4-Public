@@ -22,13 +22,19 @@ import type { EquippedCharm } from '../../src/modules/slot/slot.types.js';
 /** seed.ts 對齊的護符定義（測試本地副本） */
 const CLOVER_BOOST: EquippedCharm = {
   code: 'CLOVER_BOOST_30',
-  type: 'WEIGHT',
-  effect: { symbol: 'CLOVER', reels: [1, 2, 3], multiplier: 1.3 },
+  type: 'LUCK',
+  effect: { symbol: 'CLOVER', luck: 30 },
 };
 const CHERRY_RAIN: EquippedCharm = {
   code: 'CHERRY_RAIN_40',
   type: 'WEIGHT',
   effect: { symbol: 'CHERRY', reels: [1, 2, 3], multiplier: 1.4 },
+};
+/** 通用 WEIGHT 機制測試用（非對應任何真實護符——CLOVER_BOOST_30 已改為 LUCK 型） */
+const TEST_WEIGHT_CLOVER: EquippedCharm = {
+  code: 'TEST_WEIGHT_CLOVER',
+  type: 'WEIGHT',
+  effect: { symbol: 'CLOVER', reels: [1, 2, 3], multiplier: 1.3 },
 };
 const WILD_UNLOCK: EquippedCharm = {
   code: 'WILD_UNLOCK',
@@ -115,7 +121,7 @@ describe('compileLoadout: 基礎編譯（無護符、無幸運符號）', () => 
 
 describe('compileLoadout: WEIGHT 護符', () => {
   it('CLOVER +30%：全軸 CLOVER 權重 ×1.3，其他符號不動', () => {
-    const loadout = compile([CLOVER_BOOST]);
+    const loadout = compile([TEST_WEIGHT_CLOVER]);
     for (const table of loadout.reels) {
       expect(weightOf(table, 'CLOVER')).toBe(Math.round(8 * 1.3 * WEIGHT_PRECISION));
       expect(weightOf(table, 'CHERRY')).toBe(57 * WEIGHT_PRECISION);
@@ -141,7 +147,7 @@ describe('compileLoadout: WEIGHT 護符', () => {
       type: 'WEIGHT',
       effect: { symbol: 'CLOVER', reels: [1, 2, 3], multiplier: 1.4 },
     };
-    const loadout = compile([CLOVER_BOOST, second]);
+    const loadout = compile([TEST_WEIGHT_CLOVER, second]);
     expect(weightOf(loadout.reels[0], 'CLOVER')).toBe(
       Math.round(8 * 1.3 * 1.4 * WEIGHT_PRECISION),
     );
@@ -171,10 +177,47 @@ describe('compileLoadout: 今日幸運符號', () => {
   });
 
   it('與 WEIGHT 護符疊乘：8 × 1.3 × 1.5 = 15.6', () => {
-    const loadout = compile([CLOVER_BOOST], 'CLOVER');
+    const loadout = compile([TEST_WEIGHT_CLOVER], 'CLOVER');
     expect(weightOf(loadout.reels[0], 'CLOVER')).toBe(
       Math.round(8 * 1.3 * 1.5 * WEIGHT_PRECISION),
     );
+  });
+});
+
+// ═════════════════ LUCK 護符 ═════════════════
+
+describe('compileLoadout: LUCK 護符', () => {
+  it('編入 luckRules：{ symbol, triggerPercent }，v1 線性 1:1 對應 luck 點數', () => {
+    const loadout = compile([CLOVER_BOOST]); // seed.ts 對齊：CLOVER, luck 30
+    expect(loadout.luckRules).toEqual([{ symbol: 'CLOVER', triggerPercent: 30 }]);
+  });
+
+  it('不影響任何一軸的權重表（與 WEIGHT 機制完全獨立）', () => {
+    const loadout = compile([CLOVER_BOOST]);
+    for (const table of loadout.reels) {
+      expect(weightOf(table, 'CLOVER')).toBe(8 * WEIGHT_PRECISION);
+    }
+  });
+
+  it('多枚 LUCK 護符：依 code 字母序排列（決定 sampler 觸發優先序）', () => {
+    const barLuck: EquippedCharm = { code: 'BAR_MAGNET_35', type: 'LUCK', effect: { symbol: 'BAR', luck: 65 } };
+    const diamondLuck: EquippedCharm = { code: 'DIAMOND_DUST_20', type: 'LUCK', effect: { symbol: 'DIAMOND', luck: 20 } };
+    // 故意以「不符字母序」的順序傳入，驗證輸出仍排序
+    const loadout = compile([diamondLuck, barLuck]);
+    expect(loadout.luckRules).toEqual([
+      { symbol: 'BAR', triggerPercent: 65 },
+      { symbol: 'DIAMOND', triggerPercent: 20 },
+    ]);
+  });
+
+  it('effect 格式錯誤的護符被跳過（不影響其他 LUCK 護符）', () => {
+    const broken: EquippedCharm = {
+      code: 'BROKEN_LUCK',
+      type: 'LUCK',
+      effect: { symbol: 'NOT_A_SYMBOL', luck: 200 },
+    };
+    const loadout = compile([broken, CLOVER_BOOST]);
+    expect(loadout.luckRules).toEqual([{ symbol: 'CLOVER', triggerPercent: 30 }]);
   });
 });
 

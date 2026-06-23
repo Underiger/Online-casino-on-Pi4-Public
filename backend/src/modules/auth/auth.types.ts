@@ -32,11 +32,15 @@ export type RegisterInput = z.infer<typeof RegisterSchema>;
 export type LoginInput = z.infer<typeof LoginSchema>;
 export type RefreshInput = z.infer<typeof RefreshSchema>;
 
-// ── 回應型別 ─────────────────────────────────────────────────
+// ── 回應型別（鏡像 packages/shared dto/auth.dto.ts；backend 不 import shared） ──
 
-export interface RegisterResult {
-  userId: string;
+/** 鏡像 @casino/shared AuthUserInfo */
+export interface AuthUserInfo {
+  id: string;
   username: string;
+  role: 'PLAYER' | 'ADMIN';
+  balance: string; // BigInt → string
+  avatarId: number;
 }
 
 export interface TokenPair {
@@ -51,6 +55,11 @@ export interface TokenPair {
    * 開發模式 Redis 未啟動時為空字串（hmac-guard 同步跳過驗證）。
    */
   hmacKey: string;
+}
+
+/** register / login 回應：鏡像 @casino/shared RegisterRes / LoginRes（皆 = AuthTokens & { user }） */
+export interface RegisterResult extends TokenPair {
+  user: AuthUserInfo;
 }
 
 /** 寫入 LoginLog 用的請求中繼資料 */

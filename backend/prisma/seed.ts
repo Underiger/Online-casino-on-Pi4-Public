@@ -48,14 +48,6 @@ const prisma = new PrismaClient();
 const CHARMS = [
   // WEIGHT 權重型：修改某符號在某些轉軸的出現權重
   {
-    code: 'CLOVER_BOOST_30',
-    name: '四葉草幸運符',
-    description: '四葉草在全部轉軸的出現權重 +30%',
-    type: 'WEIGHT',
-    rarity: 'COMMON',
-    effect: { symbol: 'CLOVER', reels: [1, 2, 3], multiplier: 1.3 },
-  },
-  {
     code: 'CHERRY_RAIN_40',
     name: '櫻桃雨',
     description: '櫻桃在全部轉軸的出現權重 +40%',
@@ -63,37 +55,49 @@ const CHARMS = [
     rarity: 'COMMON',
     effect: { symbol: 'CHERRY', reels: [1, 2, 3], multiplier: 1.4 },
   },
+  // LUCK 機率型：機率鎖定第3軸為目標符號（自然已三連則不覆寫），不動權重。
+  // 2026-06-22 由 WEIGHT 乘數改版：乘數會稀釋櫻桃權重，三連又是 p³ 關係，
+  // 乘數一拉高裝備時 RTP 就崩盤（Monte Carlo 驗證 luck=1 顆鎖軸 RTP 91.5%→15~26%）。
+  // 數值取「裝備時 RTP ≈ baseline +2~4 點」（見 PR 說明 Monte Carlo 表）。
+  {
+    code: 'CLOVER_BOOST_30',
+    name: '四葉草幸運符',
+    description: '有 30% 機率讓第 3 軸直接出現四葉草（已連線則不覆寫）',
+    type: 'LUCK',
+    rarity: 'COMMON',
+    effect: { symbol: 'CLOVER', luck: 30 },
+  },
   {
     code: 'BELL_TUNER_30',
     name: '銅鈴調音器',
-    description: '鈴鐺在全部轉軸的出現權重 +30%',
-    type: 'WEIGHT',
+    description: '有 80% 機率讓第 3 軸直接出現鈴鐺（已連線則不覆寫）',
+    type: 'LUCK',
     rarity: 'COMMON',
-    effect: { symbol: 'BELL', reels: [1, 2, 3], multiplier: 1.3 },
+    effect: { symbol: 'BELL', luck: 80 },
   },
   {
     code: 'BAR_MAGNET_35',
     name: 'BAR 磁鐵',
-    description: 'BAR 在全部轉軸的出現權重 +35%',
-    type: 'WEIGHT',
+    description: '有 65% 機率讓第 3 軸直接出現 BAR（已連線則不覆寫）',
+    type: 'LUCK',
     rarity: 'RARE',
-    effect: { symbol: 'BAR', reels: [1, 2, 3], multiplier: 1.35 },
+    effect: { symbol: 'BAR', luck: 65 },
   },
   {
     code: 'SEVEN_CALLER_25',
     name: '七星召喚',
-    description: 'Lucky7 在全部轉軸的出現權重 +25%',
-    type: 'WEIGHT',
+    description: '有 30% 機率讓第 3 軸直接出現 Lucky7（已連線則不覆寫）',
+    type: 'LUCK',
     rarity: 'RARE',
-    effect: { symbol: 'LUCKY7', reels: [1, 2, 3], multiplier: 1.25 },
+    effect: { symbol: 'LUCKY7', luck: 30 },
   },
   {
     code: 'DIAMOND_DUST_20',
     name: '鑽石星塵',
-    description: '鑽石在全部轉軸的出現權重 +20%',
-    type: 'WEIGHT',
+    description: '有 20% 機率讓第 3 軸直接出現鑽石（已連線則不覆寫）',
+    type: 'LUCK',
     rarity: 'EPIC',
-    effect: { symbol: 'DIAMOND', reels: [1, 2, 3], multiplier: 1.2 },
+    effect: { symbol: 'DIAMOND', luck: 20 },
   },
   // RULE 規則型：修改賠付判定規則
   {

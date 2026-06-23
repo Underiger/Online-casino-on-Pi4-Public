@@ -29,7 +29,7 @@
     "loadtest:mixed": "k6 run scripts/loadtest/k6-mixed.js",
     "test": "npm run test --workspace=backend",
     "test:coverage": "npm run test:coverage --workspace=backend",
-    "test:security": "node scripts/security-attacks/run-all.js"
+    "test:smoke": "node scripts/smoke-test.js"
   },
   "devDependencies": {
     "concurrently": "^8.2.2",
