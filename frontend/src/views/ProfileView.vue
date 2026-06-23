@@ -67,7 +67,7 @@ onUnmounted(() => {
   <div class="profile">
     <!-- Header -->
     <header class="header">
-      <button class="back-btn" @click="router.replace('/')">← 大廳</button>
+      <button class="back-btn" @click="router.replace('/casino')">← 大廳</button>
       <div class="brand">👤 個人資料</div>
       <div class="header-right">
         <CoinDisplay />

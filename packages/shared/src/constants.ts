@@ -52,6 +52,22 @@ export const ROULETTE_PHASE_DURATION_MS = {
 /** 標準歐式輪盤號碼數（0–36） */
 export const ROULETTE_NUMBERS = 37;
 
+// ─────────────────────────── 射龍門 ───────────────────────────
+
+export const DRAGON_GATE_MIN_BET = 10;
+export const DRAGON_GATE_MAX_BET = 1_000;
+
+// ─────────────────────────── High-Low ───────────────────────────
+
+export const HIGH_LOW_MIN_BET = 10;
+export const HIGH_LOW_MAX_BET = 1_000;
+export const HIGH_LOW_MAX_STREAK = 5;
+
+// ─────────────────────────── Blackjack ───────────────────────────
+
+export const BLACKJACK_MIN_BET = 10;
+export const BLACKJACK_MAX_BET = 1_000;
+
 // ─────────────────────────── 聊天室 ───────────────────────────
 
 /** 聊天訊息最大字元數 */

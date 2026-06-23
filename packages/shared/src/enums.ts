@@ -8,6 +8,9 @@ export enum Role {
 export enum GameType {
   SLOT = 'SLOT',
   ROULETTE = 'ROULETTE',
+  DRAGON_GATE = 'DRAGON_GATE',
+  HIGH_LOW = 'HIGH_LOW',
+  BLACKJACK = 'BLACKJACK',
 }
 
 /** BalanceTransaction.type — 每筆餘額異動的原因分類 */
@@ -20,6 +23,7 @@ export enum TxType {
   ADMIN_ADJUST = 'ADMIN_ADJUST',
   JACKPOT = 'JACKPOT',
   REFUND = 'REFUND',
+  GACHA = 'GACHA',
 }
 
 export enum CharmType {

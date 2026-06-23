@@ -8,7 +8,7 @@
 #   3. 安裝依賴（npm install）
 #   4. 建置前端 dist（frontend + admin-frontend）
 #   5. 拉取/建置 Docker 映像
-#   6. 執行 Prisma migration（依賴 postgres 健康）
+#   6. 執行 Prisma migration + seed（依賴 postgres 健康；seed 為 upsert，可重複執行）
 #   7. 滾動重啟服務（up -d --build）
 #
 # 用法（專案根目錄執行）：
@@ -17,7 +17,7 @@
 # 環境前置：
 #   cp .env.example .env.production
 #   nano .env.production          # 至少設定 NODE_ENV=production + 所有機密值
-#   bash scripts/gen-secrets.sh   # 若 .env.production 中有 change_me 值
+#   bash scripts/gen-secrets.sh .env.production   # 若 .env.production 中有 change_me 值
 #   bash scripts/gen-cert.sh      # 首次部署：產生 TLS 憑證
 # ============================================================
 set -euo pipefail
@@ -44,9 +44,9 @@ info "[1/7] 環境檢查..."
 
 [[ -f "$ENV_FILE" ]] || error ".env.production 不存在！請先執行：cp .env.example .env.production"
 
-# 檢查關鍵機密是否仍為 change_me
-if grep -q "change_me" "$ENV_FILE"; then
-  error ".env.production 中仍有 change_me 佔位值，請先執行：bash scripts/gen-secrets.sh"
+# 檢查關鍵機密是否仍為 change_me（忽略註解行，避免範本說明文字誤判）
+if grep -vE '^\s*#' "$ENV_FILE" | grep -q "change_me"; then
+  error ".env.production 中仍有 change_me 佔位值，請先執行：bash scripts/gen-secrets.sh .env.production"
 fi
 
 # 檢查 TLS 憑證
@@ -94,20 +94,22 @@ docker compose \
   -f "$COMPOSE_FILE" \
   build \
   --build-arg BUILDKIT_INLINE_CACHE=1 \
-  app
+  app migrate seed
 
 # ── 6. 資料庫 Migration ───────────────────────────────────────────────────────
 info "[6/7] 執行 Prisma migration..."
 
-# 先確保 postgres 啟動
-docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d postgres redis
-info "  等待 PostgreSQL 健康檢查..."
-timeout 60 bash -c "
-  until docker compose --env-file '$ENV_FILE' -f '$COMPOSE_FILE' exec postgres \
-    pg_isready -q 2>/dev/null; do
-    sleep 2
-  done
-"
+# 先啟動 redis（不阻塞 migrate；Prisma migration 僅依賴 postgres），再用 compose 原生
+# healthcheck 等 postgres 變「健康」。改用 --wait 取代手寫 pg_isready 迴圈的理由：
+#   1. 杜絕「容器 Up ≠ DB 就緒」競態：up -d 一見進程存在就回 Running，但 postgres 首次
+#      initdb／崩潰復原期間 pg_isready 會回 rejecting connections，舊迴圈 60 秒窗口在 Pi4
+#      build 後的 I/O 壓力下容易逾時誤判。--wait 直接採用容器自身 healthcheck（含 start_period）。
+#   2. 不再用 2>/dev/null 吞掉真正的失敗原因，逾時即報錯。
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d redis
+info "  等待 PostgreSQL 變健康（compose --wait，上限 120 秒）..."
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" \
+  up -d --wait --wait-timeout 120 postgres \
+  || error "PostgreSQL 120 秒內未變健康，請執行 docker compose -f \"$COMPOSE_FILE\" logs postgres 檢查"
 
 # 使用 migrate 服務（deps build stage，含 prisma CLI）
 docker compose \
@@ -117,6 +119,16 @@ docker compose \
   run --rm migrate
 
 info "  Migration 完成"
+
+# Seed 為 upsert，可重複執行；確保新增的種子資料（如護符池）每次部署都同步到生產環境
+info "  執行 prisma db seed（upsert，安全可重複執行）..."
+docker compose \
+  --env-file "$ENV_FILE" \
+  -f "$COMPOSE_FILE" \
+  --profile migrate \
+  run --rm seed
+
+info "  Seed 完成"
 
 # ── 7. 滾動重啟全部服務 ────────────────────────────────────────────────────────
 info "[7/7] 啟動/重啟全部服務..."

@@ -5,8 +5,12 @@
  * 條件切換（CONDITIONAL 護符）：第三軸抽樣前比對前兩軸結果，
  * 命中 trigger 即改用預編譯 variant 表——仍是查表，不重算權重。
  *
+ * LUCK 護符覆寫（三軸都抽完之後才套用）：自然結果（含 CONDITIONAL 結果）已是
+ * 任意三連則不覆寫；否則依 loadout.luckRules 順序滾 rng(100) < triggerPercent，
+ * 第一個命中即鎖定第三軸＝該護符 symbol、不再滾後續規則。
+ *
  * rng 參數可注入（預設 security/csprng 的 rngInt）：
- * 單元測試以決定性序列驗證查找與條件切換，不靠統計斷言。
+ * 單元測試以決定性序列驗證查找、條件切換與 LUCK 覆寫，不靠統計斷言。
  */
 import { rngInt } from '../../security/csprng.js';
 import type { CompiledLoadout, ReelTable, SlotReels, SlotSymbol } from './slot.types.js';
@@ -84,6 +88,18 @@ export function sampleSpin(
   const first = sampleReel(loadout.reels[0], rng);
   const second = sampleReel(loadout.reels[1], rng);
   const thirdTable = variantReelOverride ?? resolveThirdReelTable(loadout, first, second);
-  const third = sampleReel(thirdTable, rng);
+  let third = sampleReel(thirdTable, rng);
+
+  // LUCK 護符：自然結果（含 CONDITIONAL）已是任意三連就不滾，保留既有中獎；
+  // 否則依序滾機率，第一個命中即鎖定第三軸、停止往下滾。
+  if (!(first === second && second === third)) {
+    for (const rule of loadout.luckRules) {
+      if (rng(100) < rule.triggerPercent) {
+        third = rule.symbol;
+        break;
+      }
+    }
+  }
+
   return [first, second, third];
 }

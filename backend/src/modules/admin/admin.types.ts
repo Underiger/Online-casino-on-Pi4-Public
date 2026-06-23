@@ -67,6 +67,26 @@ export interface AdminMeRes {
   username: string;
   role: Role;
   totpEnabled: boolean;
+  /** Telegram 2FA 推播是否已設定（TELEGRAM_BOT_TOKEN/TELEGRAM_ADMIN_CHAT_ID 皆非空） */
+  telegramEnabled: boolean;
+}
+
+/** POST /totp/reverify-telegram：發送 Telegram 核准推播 */
+export interface TelegramReverifyStartRes {
+  requestId: string;
+  /** 秒；逾時未回應視為過期 */
+  expiresIn: number;
+}
+
+/**
+ * GET /totp/reverify-telegram/:requestId：前端輪詢用。
+ * 'expired' 涵蓋「請求不存在」（從未建立 / TTL 已過）；查詢別人的 requestId
+ * 視為越權，直接拋 NotFoundError（HTTP 404），不透過這個型別表達。
+ */
+export interface TelegramReverifyStatusRes {
+  status: 'pending' | 'approved' | 'denied' | 'expired';
+  /** status==='approved' 時附帶 */
+  reverifyToken?: string;
 }
 
 // ─────────────────────────── 玩家管理 ───────────────────────────

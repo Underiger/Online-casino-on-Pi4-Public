@@ -52,6 +52,11 @@ function idParam(request: FastifyRequest): string {
   return params.id ?? '';
 }
 
+function requestIdParam(request: FastifyRequest): string {
+  const params = request.params as { requestId?: string };
+  return params.requestId ?? '';
+}
+
 const adminRoutes: FastifyPluginAsync<AdminRoutesOptions> = async (app, opts) => {
   const io = app.hasDecorator('io') ? app.io : null;
 
@@ -127,6 +132,16 @@ const adminRoutes: FastifyPluginAsync<AdminRoutesOptions> = async (app, opts) =>
     const body = parse(TotpReverifyReqSchema, request.body);
     return service.reverify(request.user.sub, body.totpCode);
   });
+
+  // Telegram 推播版重驗（取代/輔助逐次輸入 TOTP；未設定 TELEGRAM_BOT_TOKEN/CHAT_ID 時
+  // service 回 403「Telegram 2FA 未設定」，前端據此 fallback 回手動輸入）
+  app.post('/totp/reverify-telegram', adminOnly, async (request) =>
+    service.requestTelegramReverify(request.user.sub, request.ip),
+  );
+
+  app.get('/totp/reverify-telegram/:requestId', adminOnly, async (request) =>
+    service.getTelegramReverifyStatus(request.user.sub, requestIdParam(request)),
+  );
 
   // ── 玩家管理 ──────────────────────────────────────────────────────────────────
 

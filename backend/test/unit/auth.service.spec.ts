@@ -78,6 +78,8 @@ interface FakeUser {
   passwordHash: string;
   role: string;
   banned: boolean;
+  balance: bigint;
+  avatarId: number;
 }
 interface FakeRefreshToken {
   id: string;
@@ -122,6 +124,8 @@ function createFakeDb() {
           passwordHash: data.passwordHash,
           role: 'PLAYER',
           banned: false,
+          balance: 5000n,
+          avatarId: 0,
         };
         usersTable.push(user);
         return user;
@@ -183,14 +187,27 @@ function createFakeHmacKeys() {
   };
 }
 
+/** M06 修復：記錄 seq 門檻重設呼叫的假實作 */
+function createFakeReplay() {
+  const resetCalls: string[] = [];
+  return {
+    resetCalls,
+    async resetSeq(userId: string): Promise<void> {
+      resetCalls.push(userId);
+    },
+  };
+}
+
 function makeService(
   db: ReturnType<typeof createFakeDb>,
   hmacKeys = createFakeHmacKeys(),
+  replay = createFakeReplay(),
 ) {
   return createAuthService({
     prisma: db.prisma,
     signAccessToken: (payload) => `jwt.${payload.sub}.${payload.role}`,
     hmacKeys,
+    resetSeq: replay.resetSeq,
   });
 }
 
@@ -203,14 +220,14 @@ describe('auth service 流程', () => {
   beforeEach(async () => {
     db = createFakeDb();
     service = makeService(db);
-    await service.register({ username: 'alice', password: 'password123' });
+    await service.register({ username: 'alice', password: 'password123' }, META);
   });
 
   it('register：建立玩家並回 userId；重複名稱 → ConflictError', async () => {
     expect(db.usersTable).toHaveLength(1);
     expect(db.usersTable[0]?.passwordHash.startsWith('$argon2id$')).toBe(true);
     await expect(
-      service.register({ username: 'alice', password: 'password456' }),
+      service.register({ username: 'alice', password: 'password456' }, META),
     ).rejects.toBeInstanceOf(ConflictError);
   });
 
@@ -219,8 +236,9 @@ describe('auth service 流程', () => {
     expect(pair.accessToken).toBe(`jwt.${db.usersTable[0]?.id}.PLAYER`);
     expect(pair.refreshToken).toMatch(/^[0-9a-f]{128}$/);
     expect(pair.expiresIn).toBe(900);
-    expect(db.tokens).toHaveLength(1);
-    expect(db.tokens[0]?.tokenHash).toBe(hashToken(pair.refreshToken));
+    // register（beforeEach）也會發一組 token，故 +1
+    expect(db.tokens).toHaveLength(2);
+    expect(db.tokens.at(-1)?.tokenHash).toBe(hashToken(pair.refreshToken));
     expect(db.loginLogs.at(-1)).toMatchObject({ result: 'SUCCESS', ip: META.ip });
   });
 
@@ -251,10 +269,13 @@ describe('auth service 流程', () => {
     const second = await service.refresh(first.refreshToken);
 
     expect(second.refreshToken).not.toBe(first.refreshToken);
-    expect(db.tokens).toHaveLength(2);
-    expect(db.tokens[0]?.revoked).toBe(true); // 舊的已廢
-    expect(db.tokens[1]?.revoked).toBe(false); // 新的有效
-    expect(db.tokens[1]?.familyId).toBe(db.tokens[0]?.familyId); // 同旋轉鏈
+    // register（beforeEach）+ login(first) + refresh(second) = 3
+    expect(db.tokens).toHaveLength(3);
+    const firstRow = db.tokens.find((t) => t.tokenHash === hashToken(first.refreshToken));
+    const secondRow = db.tokens.find((t) => t.tokenHash === hashToken(second.refreshToken));
+    expect(firstRow?.revoked).toBe(true); // 舊的已廢
+    expect(secondRow?.revoked).toBe(false); // 新的有效
+    expect(secondRow?.familyId).toBe(firstRow?.familyId); // 同旋轉鏈
   });
 
   it('refresh：重用已撤銷 token → 403 且整個家族撤銷', async () => {
@@ -264,16 +285,21 @@ describe('auth service 流程', () => {
     // 拿作廢的 first 重放 → 重用偵測
     await expect(service.refresh(first.refreshToken)).rejects.toBeInstanceOf(ForbiddenError);
 
-    // 全家族（含尚有效的 second）一律撤銷
-    expect(db.tokens.every((t) => t.revoked)).toBe(true);
+    // 該登入家族（含尚有效的 second）一律撤銷；register（beforeEach）為不同家族，不受影響
+    const familyId = db.tokens.find((t) => t.tokenHash === hashToken(first.refreshToken))
+      ?.familyId;
+    const familyTokens = db.tokens.filter((t) => t.familyId === familyId);
+    expect(familyTokens.length).toBeGreaterThan(0);
+    expect(familyTokens.every((t) => t.revoked)).toBe(true);
     await expect(service.refresh(second.refreshToken)).rejects.toBeInstanceOf(ForbiddenError);
   });
 
   it('refresh：過期 token → 401 並標記撤銷', async () => {
     const pair = await service.login({ username: 'alice', password: 'password123' }, META);
-    db.tokens[0]!.expiresAt = new Date(Date.now() - 1_000);
+    const row = db.tokens.find((t) => t.tokenHash === hashToken(pair.refreshToken));
+    row!.expiresAt = new Date(Date.now() - 1_000);
     await expect(service.refresh(pair.refreshToken)).rejects.toBeInstanceOf(UnauthorizedError);
-    expect(db.tokens[0]?.revoked).toBe(true);
+    expect(row?.revoked).toBe(true);
   });
 
   it('refresh：不存在的 token → 401', async () => {
@@ -285,7 +311,10 @@ describe('auth service 流程', () => {
   it('logout：撤銷整個家族且冪等', async () => {
     const pair = await service.login({ username: 'alice', password: 'password123' }, META);
     await service.logout(pair.refreshToken);
-    expect(db.tokens.every((t) => t.revoked)).toBe(true);
+    const familyId = db.tokens.find((t) => t.tokenHash === hashToken(pair.refreshToken))
+      ?.familyId;
+    const familyTokens = db.tokens.filter((t) => t.familyId === familyId);
+    expect(familyTokens.every((t) => t.revoked)).toBe(true);
 
     // 再次登出與未知 token 登出皆不拋錯
     await expect(service.logout(pair.refreshToken)).resolves.toBeUndefined();
@@ -295,7 +324,9 @@ describe('auth service 流程', () => {
   it('多裝置：不同登入為不同 family，互不影響', async () => {
     const deviceA = await service.login({ username: 'alice', password: 'password123' }, META);
     const deviceB = await service.login({ username: 'alice', password: 'password123' }, META);
-    expect(db.tokens[0]?.familyId).not.toBe(db.tokens[1]?.familyId);
+    const rowA = db.tokens.find((t) => t.tokenHash === hashToken(deviceA.refreshToken));
+    const rowB = db.tokens.find((t) => t.tokenHash === hashToken(deviceB.refreshToken));
+    expect(rowA?.familyId).not.toBe(rowB?.familyId);
 
     await service.logout(deviceA.refreshToken);
     // device B 不受影響，仍可旋轉
@@ -315,21 +346,23 @@ describe('HMAC 金鑰協商與輪換', () => {
     db = createFakeDb();
     hmacKeys = createFakeHmacKeys();
     service = makeService(db, hmacKeys);
-    await service.register({ username: 'alice', password: 'password123' });
+    await service.register({ username: 'alice', password: 'password123' }, META);
   });
 
   it('login 協商金鑰並隨回應下發', async () => {
     const pair = await service.login({ username: 'alice', password: 'password123' }, META);
     const userId = db.usersTable[0]!.id;
-    expect(hmacKeys.rotated).toEqual([userId]);
-    expect(pair.hmacKey).toBe(`hmac-key-${userId}-1`);
+    // register（beforeEach）也會協商一次，故 login 是第 2 次 rotate
+    expect(hmacKeys.rotated).toEqual([userId, userId]);
+    expect(pair.hmacKey).toBe(`hmac-key-${userId}-2`);
   });
 
   it('refresh 輪換新金鑰（每次不同）', async () => {
     const first = await service.login({ username: 'alice', password: 'password123' }, META);
     const second = await service.refresh(first.refreshToken);
     expect(second.hmacKey).not.toBe(first.hmacKey);
-    expect(hmacKeys.rotated).toHaveLength(2);
+    // register + login + refresh = 3
+    expect(hmacKeys.rotated).toHaveLength(3);
   });
 
   it('logout 撤銷金鑰；未知 token 登出不觸發撤銷（冪等）', async () => {
@@ -339,5 +372,40 @@ describe('HMAC 金鑰協商與輪換', () => {
 
     await service.logout(generateRefreshToken());
     expect(hmacKeys.revoked).toHaveLength(1); // 不重複撤銷
+  });
+});
+
+// ═════════════════ Seq 門檻重設（修復跨 session 殘留 ERR_SEQ_REGRESSION） ═════════════════
+
+describe('Seq 門檻重設', () => {
+  let db: ReturnType<typeof createFakeDb>;
+  let replay: ReturnType<typeof createFakeReplay>;
+  let service: ReturnType<typeof makeService>;
+
+  beforeEach(async () => {
+    db = createFakeDb();
+    replay = createFakeReplay();
+    service = makeService(db, createFakeHmacKeys(), replay);
+    await service.register({ username: 'alice', password: 'password123' }, META);
+  });
+
+  it('register 會重設 seq 門檻（client 端 seq 從 0 起算）', () => {
+    const userId = db.usersTable[0]!.id;
+    expect(replay.resetCalls).toEqual([userId]);
+  });
+
+  it('login 會重設 seq 門檻', async () => {
+    const userId = db.usersTable[0]!.id;
+    await service.login({ username: 'alice', password: 'password123' }, META);
+    // register（beforeEach）+ login，皆是 client 端 seq 真正歸零的時刻
+    expect(replay.resetCalls).toEqual([userId, userId]);
+  });
+
+  it('refresh 不會重設 seq 門檻——client 端 seq 未歸零，重設會縮短防重放保護窗', async () => {
+    const userId = db.usersTable[0]!.id;
+    const pair = await service.login({ username: 'alice', password: 'password123' }, META);
+    await service.refresh(pair.refreshToken);
+    // 仍只有 register + login 兩次，refresh 沒有新增呼叫
+    expect(replay.resetCalls).toEqual([userId, userId]);
   });
 });

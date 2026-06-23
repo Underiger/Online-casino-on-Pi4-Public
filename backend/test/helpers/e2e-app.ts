@@ -99,7 +99,8 @@ export async function registerAndLogin(
   if (reg.statusCode !== 201) {
     throw new Error(`register 失敗（${reg.statusCode}）：${reg.body}`);
   }
-  const { userId } = reg.json() as { userId: string };
+  const { user } = reg.json() as { user: { id: string } };
+  const userId = user.id;
 
   const login = await app.inject({
     method: 'POST',

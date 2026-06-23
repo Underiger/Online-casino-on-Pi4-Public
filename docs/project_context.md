@@ -145,7 +145,7 @@ cp .env.example .env.production
 # 修改 NODE_ENV=production、POSTGRES_DB=casino_prod
 # DATABASE_URL=postgresql://casino:<PWD>@postgres:5432/casino_prod?schema=public
 # REDIS_URL=redis://redis:6379
-bash scripts/gen-secrets.sh
+bash scripts/gen-secrets.sh .env.production
 ```
 
 ---

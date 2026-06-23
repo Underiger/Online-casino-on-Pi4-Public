@@ -47,6 +47,13 @@ const EnvSchema = z.object({
     ),
 
   SOCKET_MAX_CONNECTIONS: z.coerce.number().int().min(1).default(200),
+
+  // Telegram 2FA 推播（可選）：留空即功能關閉，2FA 退回手動輸入 TOTP。
+  // bot token 格式範例：123456789:ABCdefGHIjklmNOpqrstUVwxyz（@BotFather 取得）
+  TELEGRAM_BOT_TOKEN: z.string().default(''),
+  // 唯一授權核准的 Telegram chat id（數字字串；對 bot 發一則訊息後以
+  // https://api.telegram.org/bot<token>/getUpdates 查得）
+  TELEGRAM_ADMIN_CHAT_ID: z.string().default(''),
 });
 
 const parsed = EnvSchema.safeParse(process.env);

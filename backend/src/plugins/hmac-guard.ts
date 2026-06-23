@@ -35,7 +35,7 @@ import { createIllegalPacketService } from '../modules/audit/illegal-packet.serv
 
 export interface SignedRouteSpec {
   /** canonical 的 gameType 欄位 */
-  gameType: 'SLOT' | 'ROULETTE';
+  gameType: 'SLOT' | 'ROULETTE' | 'DRAGON_GATE' | 'HIGH_LOW' | 'BLACKJACK';
   /** 從已解析 body 萃取 betAmount（canonical 完整性綁定的注額） */
   betAmount: (body: unknown) => number;
 }
@@ -43,6 +43,12 @@ export interface SignedRouteSpec {
 /**
  * 受簽章保護的路由（規格凍結於 docs/04_API_SPEC.md §1.4）。
  * M11 / M15 實作對應路由時即自動受檢，無需回頭改本 plugin。
+ *
+ * 只有「請求 body 帶客戶端宣稱注額」的 endpoint 才需要列在這裡——HMAC canonical
+ * 綁注額是為了防止傳輸中被竄改成別的金額；像 high-low/cash-out、blackjack/double
+ * 這類「金額由伺服器自己存的回合狀態決定、body 沒有客戶端金額欄位」的 endpoint，
+ * 簽一個假數字進 canonical 沒有意義，一般 JWT 認證 + round-lock／回合狀態消費後
+ * 自然失效就足夠（與 slot 的 /paytable、/history 同邏輯）。
  */
 export const DEFAULT_SIGNED_ROUTES: Record<string, SignedRouteSpec> = {
   'POST /api/slot/spin': {
@@ -63,6 +69,18 @@ export const DEFAULT_SIGNED_ROUTES: Record<string, SignedRouteSpec> = {
       }
       return total;
     },
+  },
+  'POST /api/dragon-gate/bet': {
+    gameType: 'DRAGON_GATE',
+    betAmount: (body) => Number((body as { betAmount?: unknown } | null)?.betAmount),
+  },
+  'POST /api/high-low/deal': {
+    gameType: 'HIGH_LOW',
+    betAmount: (body) => Number((body as { betAmount?: unknown } | null)?.betAmount),
+  },
+  'POST /api/blackjack/deal': {
+    gameType: 'BLACKJACK',
+    betAmount: (body) => Number((body as { betAmount?: unknown } | null)?.betAmount),
   },
 };
 

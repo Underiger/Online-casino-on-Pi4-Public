@@ -139,7 +139,13 @@ async function submitCredentials(): Promise<void> {
       errMsg.value = '帳號無管理員權限';
       return;
     }
-    auth.setUser({ id: me.userId, username: me.username, role: me.role, totpEnabled: me.totpEnabled });
+    auth.setUser({
+      id: me.userId,
+      username: me.username,
+      role: me.role,
+      totpEnabled: me.totpEnabled,
+      telegramEnabled: me.telegramEnabled,
+    });
 
     if (!me.totpEnabled) {
       ui.addToast('登入成功', 'success');

@@ -5,7 +5,11 @@
  * 持久化策略（02_TDD §5.2 安全要求）：
  *   - accessToken / refreshToken / user → localStorage（頁面重新整理後恢復登入狀態）
  *   - hmacKey → 僅 Pinia 記憶體（不落 localStorage，防 XSS 竊鑰）
- *   - seq → 僅 Pinia 記憶體（重整後歸零；Server 端 last_seq 鍵 TTL 7d 自然清零）
+ *   - seq → 也落 localStorage（單純數字，非機密）。Server 端 last_seq:{userId}
+ *     門檻存活 7 天，若 seq 只存記憶體，重新整理頁面會歸零但門檻不會動，
+ *     第一次請求必倒退被拒（ERR_SEQ_REGRESSION）。持久化後重整頁面可接續舊值；
+ *     真正的歸零時機改為 register/login 成功時（與後端 resetSequence 同步），
+ *     見 auth.service.ts AuthServiceDeps.resetSeq。
  */
 import { ref, computed } from 'vue';
 import { defineStore } from 'pinia';
@@ -15,6 +19,7 @@ import type { LoginReq, RegisterReq, RefreshRes } from '@casino/shared';
 const LS_ACCESS = 'casino_access_token';
 const LS_REFRESH = 'casino_refresh_token';
 const LS_USER = 'casino_user';
+const LS_SEQ = 'casino_seq';
 
 export interface StoredUser {
   id: string;
@@ -43,8 +48,9 @@ export const useAuthStore = defineStore('auth', () => {
   /** HMAC 金鑰：僅存記憶體，不落 localStorage */
   const hmacKey = ref<string | null>(null);
 
-  /** 請求序號：嚴格遞增，每次簽章後由 nextSeq() 推進 */
-  const seq = ref(0);
+  /** 請求序號：嚴格遞增，每次簽章後由 nextSeq() 推進；落 localStorage 撐過頁面重整 */
+  const storedSeq = Number(localStorage.getItem(LS_SEQ));
+  const seq = ref(Number.isFinite(storedSeq) && storedSeq > 0 ? storedSeq : 0);
 
   // ── computed ──
   const isLoggedIn = computed(() => accessToken.value !== null && user.value !== null);
@@ -55,9 +61,12 @@ export const useAuthStore = defineStore('auth', () => {
     refreshToken.value = tokens.refreshToken;
     hmacKey.value = tokens.hmacKey;
     user.value = u;
+    // register/login 是 server 端 resetSequence 的時間點，client 端同步歸零
+    seq.value = 0;
     localStorage.setItem(LS_ACCESS, tokens.accessToken);
     localStorage.setItem(LS_REFRESH, tokens.refreshToken);
     localStorage.setItem(LS_USER, JSON.stringify(u));
+    localStorage.setItem(LS_SEQ, '0');
   }
 
   function clearPersisted(): void {
@@ -69,12 +78,15 @@ export const useAuthStore = defineStore('auth', () => {
     localStorage.removeItem(LS_ACCESS);
     localStorage.removeItem(LS_REFRESH);
     localStorage.removeItem(LS_USER);
+    localStorage.removeItem(LS_SEQ);
     clearKeyCache();
   }
 
-  /** 呼叫後取得當前 seq 並自增（用於 signRequest） */
+  /** 呼叫後取得當前 seq 並自增（用於 signRequest）；落 localStorage 撐過頁面重整 */
   function nextSeq(): number {
-    return seq.value++;
+    const current = seq.value++;
+    localStorage.setItem(LS_SEQ, String(seq.value));
+    return current;
   }
 
   // ── actions ──

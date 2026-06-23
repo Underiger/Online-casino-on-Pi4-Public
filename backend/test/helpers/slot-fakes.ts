@@ -211,6 +211,41 @@ export function createFakeDb(options: FakeDbOptions) {
           (b) => b.userId === where.userId && b.gameType === where.gameType,
         ).length;
       },
+      async findFirst({
+        where,
+      }: {
+        where: { userId: string; roundId?: string; gameType: string };
+        orderBy?: unknown;
+        select?: unknown;
+      }) {
+        const matches = betRecords
+          .filter(
+            (b) =>
+              b.userId === where.userId &&
+              b.gameType === where.gameType &&
+              (where.roundId === undefined || b.roundId === where.roundId),
+          )
+          .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+        return matches[0] ?? null;
+      },
+      async findUniqueOrThrow({ where }: { where: { id: string } }) {
+        const record = betRecords.find((b) => b.id === where.id);
+        if (!record) throw new Error('P2025: record not found');
+        return record;
+      },
+      async update({
+        where,
+        data,
+      }: {
+        where: { id: string };
+        data: { detail?: Record<string, unknown>; payout?: bigint };
+      }) {
+        const record = betRecords.find((b) => b.id === where.id);
+        if (!record) throw new Error('P2025: record not found');
+        if (data.detail !== undefined) record.detail = data.detail;
+        if (data.payout !== undefined) record.payout = data.payout;
+        return record;
+      },
     },
     balanceTransaction: {
       async create({ data }: { data: Omit<FakeTxRecord, 'id' | 'createdAt'> }) {
@@ -353,6 +388,8 @@ export function createFakeRedis() {
   const store = new Map<string, string>();
   const hashes = new Map<string, Map<string, string>>();
   const lists = new Map<string, string[]>();
+  /** SET ... EX 記錄的「名義 TTL」秒數（不模擬真實倒數，測試直接控制要回傳的值） */
+  const ttls = new Map<string, number>();
   /** 加入方法名（get/set/del/incr/incrby/hincrby/rpush…）即令該方法拋錯 */
   const failOn = new Set<string>();
 
@@ -383,20 +420,58 @@ export function createFakeRedis() {
       check('get');
       return store.get(key) ?? null;
     },
-    // 支援 SET key value [EX ttl] [NX]：NX 且鍵已存在 → null（leader lock 語義）
+    // 支援 SET key value [EX ttl|PX ttl] [NX]：NX 且鍵已存在 → null（leader lock 語義）
     async set(key: string, value: string, ...args: unknown[]): Promise<'OK' | null> {
       check('set');
       const flags = args.map((a) => String(a).toUpperCase());
       if (flags.includes('NX') && store.has(key)) return null;
       store.set(key, value);
+      const exIdx = flags.indexOf('EX');
+      const pxIdx = flags.indexOf('PX');
+      if (exIdx !== -1) ttls.set(key, Number(args[exIdx + 1]));
+      else if (pxIdx !== -1) ttls.set(key, Math.ceil(Number(args[pxIdx + 1]) / 1000));
+      else ttls.delete(key);
       return 'OK';
+    },
+    // 名義 TTL：測試直接讀 set() 時記錄的秒數，不模擬真實倒數（abandoned-round job 用）
+    async ttl(key: string): Promise<number> {
+      check('ttl');
+      if (!store.has(key)) return -2;
+      return ttls.get(key) ?? -1;
+    },
+    // 簡化版 SCAN：一次性回傳所有符合 MATCH glob（只支援 * 萬用字元）的鍵，cursor 恆為 '0'
+    async scan(_cursor: string, ...args: unknown[]): Promise<[string, string[]]> {
+      check('scan');
+      const matchIdx = args.findIndex((a) => String(a).toUpperCase() === 'MATCH');
+      const pattern = matchIdx !== -1 ? String(args[matchIdx + 1]) : '*';
+      const regex = new RegExp(`^${pattern.split('*').map((s) => s.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`);
+      const keys = [...store.keys()].filter((k) => regex.test(k));
+      return ['0', keys];
     },
     async del(key: string): Promise<number> {
       check('del');
       const had = store.delete(key);
       const hadHash = hashes.delete(key);
       const hadList = lists.delete(key);
+      ttls.delete(key);
       return had || hadHash || hadList ? 1 : 0;
+    },
+    // GETDEL key：原子讀出同時刪除（射龍門 bet 單步 claim 用）
+    async getdel(key: string): Promise<string | null> {
+      check('getdel');
+      const value = store.get(key) ?? null;
+      store.delete(key);
+      ttls.delete(key);
+      return value;
+    },
+    // 簡化版 eval：round-lock 的 RELEASE_IF_OWNER_LUA 語義（GET 比對才 DEL）
+    async eval(_script: string, _numKeys: number, key: string, token: string): Promise<number> {
+      check('eval');
+      if (store.get(key) === token) {
+        store.delete(key);
+        return 1;
+      }
+      return 0;
     },
     async incr(key: string): Promise<number> {
       check('incr');
@@ -479,6 +554,7 @@ export function createFakeRedis() {
     store,
     hashes,
     lists,
+    ttls,
     failOn,
   };
 }

@@ -13,9 +13,27 @@ const routes: RouteRecordRaw[] = [
   },
   {
     path: '/',
-    name: 'lobby',
+    name: 'hub',
+    component: () => import('../views/HubView.vue'),
+    meta: { requiresAuth: true },
+  },
+  {
+    path: '/casino',
+    name: 'casino-lobby',
     component: () => import('../views/LobbyView.vue'),
     meta: { requiresAuth: true },
+  },
+  {
+    path: '/minigames',
+    name: 'minigames',
+    component: () => import('../views/ComingSoonView.vue'),
+    meta: { requiresAuth: true, title: '益智小遊戲', icon: '🧩', desc: '俄羅斯方塊、踩地雷、小精靈……開發中，敬請期待！' },
+  },
+  {
+    path: '/monopoly',
+    name: 'monopoly',
+    component: () => import('../views/ComingSoonView.vue'),
+    meta: { requiresAuth: true, title: '大富翁', icon: '🏠', desc: '經典棋盤對戰，開發中，敬請期待！' },
   },
   // 後續 Milestone 補充的路由佔位（M11/M15/M17/M19/M20）
   {
@@ -28,6 +46,30 @@ const routes: RouteRecordRaw[] = [
     path: '/roulette',
     name: 'roulette',
     component: () => import('../views/RouletteView.vue'),
+    meta: { requiresAuth: true },
+  },
+  {
+    path: '/dragon-gate',
+    name: 'dragon-gate',
+    component: () => import('../views/DragonGateView.vue'),
+    meta: { requiresAuth: true },
+  },
+  {
+    path: '/high-low',
+    name: 'high-low',
+    component: () => import('../views/HighLowView.vue'),
+    meta: { requiresAuth: true },
+  },
+  {
+    path: '/blackjack',
+    name: 'blackjack',
+    component: () => import('../views/BlackjackView.vue'),
+    meta: { requiresAuth: true },
+  },
+  {
+    path: '/gacha',
+    name: 'gacha',
+    component: () => import('../views/GachaView.vue'),
     meta: { requiresAuth: true },
   },
   {

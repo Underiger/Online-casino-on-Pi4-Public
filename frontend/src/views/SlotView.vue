@@ -54,8 +54,27 @@ const spinDisabled = computed(() => isAnimating.value || slotStore.isSpinning);
 // ── 拉桿動畫 ──
 const leverDown = ref(false);
 
+// ── BGM（M12 追加）：瀏覽器政策需使用者互動後才能有聲播放 ──
+const bgmAudio = ref<HTMLAudioElement | null>(null);
+const bgmMuted = ref(localStorage.getItem('slot-bgm-muted') === 'true');
+
+function toggleBgmMuted(): void {
+  bgmMuted.value = !bgmMuted.value;
+  localStorage.setItem('slot-bgm-muted', String(bgmMuted.value));
+  const audio = bgmAudio.value;
+  if (audio === null) return;
+  if (bgmMuted.value) {
+    audio.pause();
+  } else {
+    void audio.play().catch(() => { /* 使用者尚未互動，待下次操作觸發 */ });
+  }
+}
+
 async function handleLeverPull(): Promise<void> {
   if (spinDisabled.value) return;
+  if (bgmAudio.value !== null && bgmAudio.value.paused && !bgmMuted.value) {
+    void bgmAudio.value.play().catch(() => { /* 忽略瀏覽器自動播放限制 */ });
+  }
   leverDown.value = true;
   await new Promise<void>(r => setTimeout(r, 280));
   leverDown.value = false;
@@ -189,6 +208,7 @@ onUnmounted(() => {
   const socket = getSocket();
   socket.off(SOCKET_EVENTS.JACKPOT_TICK);
   socket.off(SOCKET_EVENTS.JACKPOT_WON);
+  bgmAudio.value?.pause();
 });
 </script>
 
@@ -196,13 +216,24 @@ onUnmounted(() => {
   <div class="slot-view">
     <!-- ─── Header ─────────────────────────────────────── -->
     <header class="header">
-      <RouterLink to="/" class="back-btn" aria-label="返回大廳">← 大廳</RouterLink>
+      <RouterLink to="/casino" class="back-btn" aria-label="返回大廳">← 大廳</RouterLink>
       <span class="page-title">🎰 老虎機</span>
       <div class="header-right">
+        <button
+          class="bgm-toggle-btn"
+          :aria-label="bgmMuted ? '開啟音樂' : '關閉音樂'"
+          :aria-pressed="!bgmMuted"
+          @click="toggleBgmMuted"
+        >
+          {{ bgmMuted ? '🔇' : '🔊' }}
+        </button>
         <CoinDisplay />
         <span class="username">{{ auth.user?.username }}</span>
       </div>
     </header>
+
+    <audio ref="bgmAudio" src="/audio/triple-seven-spin.mp3" loop preload="auto" />
+
 
     <!-- ─── Jackpot Ticker ─────────────────────────────── -->
     <div class="jackpot-ticker">
@@ -339,6 +370,25 @@ onUnmounted(() => {
 .username {
   color: rgba(255, 255, 255, 0.7);
   font-size: 0.85rem;
+}
+
+.bgm-toggle-btn {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 50%;
+  width: 2rem;
+  height: 2rem;
+  font-size: 0.95rem;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color 0.2s;
+}
+
+.bgm-toggle-btn:hover {
+  border-color: rgba(255, 215, 0, 0.5);
 }
 
 /* ── Jackpot Ticker ── */

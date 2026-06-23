@@ -11,6 +11,12 @@
  *   = 最終浮點權重 → 以 WEIGHT_PRECISION 取整 → cum 累積陣列
  *   另對每枚 CONDITIONAL 護符：以「最終表」為底再施變體乘數，編譯 variant 表。
  *
+ * LUCK 型護符不參與上述權重管線（故意獨立）：權重乘數會稀釋櫻桃，三連機率又是
+ * p³ 關係，乘數一拉高裝備時 RTP 就崩盤（Monte Carlo 驗證見 PR 說明）。LUCK 改成
+ * 機率直接鎖定第3軸＝目標符號，且自然結果已是任意三連時不覆寫（二連判定只看
+ * 左起前兩軸，不受影響）——只把原本會摃龜的轉動轉成可能中獎，不犧牲既有中獎。
+ * 編譯時僅算出 { symbol, triggerPercent }，實際擲骰與覆寫在 sampler.ts:sampleSpin。
+ *
  * 防呆：effect JSON 以 zod 逐型別解析，格式不符的護符直接跳過（不拋錯）——
  * 旋轉路徑的快取 miss 重編譯不可因單枚髒資料癱瘓；M13 裝備 API 會在入口先驗證。
  */
@@ -28,6 +34,7 @@ import {
 import type {
   CompiledBonus,
   CompiledLoadout,
+  CompiledLuckRule,
   CompiledVariant,
   CompiledRules,
   EquippedCharm,
@@ -72,6 +79,21 @@ const bonusEffectSchema = z.object({
   onSymbol: symbolSchema,
   jackpotPoints: z.number().int().positive(),
 });
+
+/** LUCK：{ symbol, luck }（luck 0–100，對應觸發機率；不動權重） */
+const luckEffectSchema = z.object({
+  symbol: symbolSchema,
+  luck: z.number().int().min(0).max(100),
+});
+
+/**
+ * luck 點數 → 觸發機率百分比（0–100）。v1 線性 1:1（luck=30 即 30%）。
+ * 本輪 6 顆護符各鎖不同符號、不疊加，線性已落在 RTP 預算內；
+ * 未來若有多來源疊加同一符號需要抑制成長，只改這個函式即可，呼叫端不用動。
+ */
+function luckToTriggerPercent(luck: number): number {
+  return luck;
+}
 
 // ─────────────────────────── 內部：浮點權重 → ReelTable ───────────────────────────
 
@@ -165,6 +187,20 @@ export function compileLoadout(input: CompileLoadoutInput): CompiledLoadout {
     }
   }
 
+  // ── 3b. LUCK 護符：機率鎖第3軸，不動權重（與 WEIGHT 的 p³ 機制互相獨立） ──
+  // 依 code 排序求穩定觸發優先序（sampler.ts 依序滾機率，第一個命中即套用）。
+  const luckRules: CompiledLuckRule[] = [];
+  const sortedCharms = [...input.charms].sort((a, b) => a.code.localeCompare(b.code));
+  for (const charm of sortedCharms) {
+    if (charm.type !== 'LUCK') continue;
+    const parsed = luckEffectSchema.safeParse(charm.effect);
+    if (!parsed.success) continue;
+    luckRules.push({
+      symbol: parsed.data.symbol,
+      triggerPercent: luckToTriggerPercent(parsed.data.luck),
+    });
+  }
+
   // ── 4. CONDITIONAL 護符：以最終表為底編譯 variant ──
   const variants: Record<string, CompiledVariant> = {};
   for (const charm of input.charms) {
@@ -214,7 +250,7 @@ export function compileLoadout(input: CompileLoadoutInput): CompiledLoadout {
         break;
       }
       default:
-        break; // WEIGHT / CONDITIONAL 已於上方處理
+        break; // WEIGHT / LUCK / CONDITIONAL 已於上方處理
     }
   }
 
@@ -241,6 +277,7 @@ export function compileLoadout(input: CompileLoadoutInput): CompiledLoadout {
     ),
     reels,
     variants,
+    luckRules,
     rules,
     version: WEIGHT_TABLE_VERSION,
   };

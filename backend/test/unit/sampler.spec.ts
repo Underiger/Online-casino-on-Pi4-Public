@@ -47,6 +47,20 @@ function miniLoadout(): CompiledLoadout {
         table: { cum: [1], symbols: ['DIAMOND'] },
       },
     },
+    luckRules: [],
+    rules: { wildSubstitute: false, pityThreshold: null, pityMultiplier: 1, bonuses: [] },
+    version: 1,
+  };
+}
+
+/** 同 miniLoadout 的三軸表，但無 CONDITIONAL 變體、改帶指定 luckRules（LUCK 覆寫測試專用） */
+function miniLoadoutWithLuck(luckRules: CompiledLoadout['luckRules']): CompiledLoadout {
+  const table: ReelTable = { cum: [1, 2], symbols: ['LUCKY7', 'CHERRY'] };
+  return {
+    loadoutHash: 'x'.repeat(64),
+    reels: [structuredClone(table), structuredClone(table), structuredClone(table)],
+    variants: {},
+    luckRules,
     rules: { wildSubstitute: false, pityThreshold: null, pityMultiplier: 1, bonuses: [] },
     version: 1,
   };
@@ -161,6 +175,45 @@ describe('resolveThirdReelTable / sampleSpin 條件切換', () => {
     const override: ReelTable = { cum: [1], symbols: ['BAR'] };
     // 前兩軸即使命中 trigger，override 優先
     expect(sampleSpin(loadout, seqRng([0, 0, 0]), override)).toEqual(['LUCKY7', 'LUCKY7', 'BAR']);
+  });
+});
+
+// ═════════════════ LUCK 護符覆寫第三軸 ═════════════════
+
+describe('sampleSpin：LUCK 護符', () => {
+  it('自然結果非任意三連、機率命中 → 鎖定第三軸為護符 symbol', () => {
+    const loadout = miniLoadoutWithLuck([{ symbol: 'BAR', triggerPercent: 30 }]);
+    // 軸1 point0→LUCKY7；軸2 point1→CHERRY（非三連）；軸3 point0→LUCKY7；luck roll 10<30 命中
+    expect(sampleSpin(loadout, seqRng([0, 1, 0, 10]))).toEqual(['LUCKY7', 'CHERRY', 'BAR']);
+  });
+
+  it('自然結果非任意三連、機率未命中 → 第三軸維持自然抽樣結果', () => {
+    const loadout = miniLoadoutWithLuck([{ symbol: 'BAR', triggerPercent: 30 }]);
+    // 同上但 luck roll 50 ≥ 30，不觸發
+    expect(sampleSpin(loadout, seqRng([0, 1, 0, 50]))).toEqual(['LUCKY7', 'CHERRY', 'LUCKY7']);
+  });
+
+  it('自然結果已是任意三連 → 完全不滾 LUCK（不額外呼叫 rng，既有中獎不犧牲）', () => {
+    const loadout = miniLoadoutWithLuck([{ symbol: 'BAR', triggerPercent: 100 }]);
+    // 三軸皆 point0→LUCKY7，自然三連；只給 3 個 rng 值，若實作誤滾第4次會拋「值耗盡」
+    expect(sampleSpin(loadout, seqRng([0, 0, 0]))).toEqual(['LUCKY7', 'LUCKY7', 'LUCKY7']);
+  });
+
+  it('多顆 LUCK 護符：第一顆未命中時滾第二顆，命中即停止', () => {
+    const loadout = miniLoadoutWithLuck([
+      { symbol: 'BAR', triggerPercent: 30 },
+      { symbol: 'WILD', triggerPercent: 50 },
+    ]);
+    // 軸1→LUCKY7，軸2→CHERRY（非三連），軸3→LUCKY7；BAR roll 40≥30 未命中，WILD roll 10<50 命中
+    expect(sampleSpin(loadout, seqRng([0, 1, 0, 40, 10]))).toEqual(['LUCKY7', 'CHERRY', 'WILD']);
+  });
+
+  it('triggerPercent 邊界：100 在 rng 最大值 99 仍命中；0 在 rng 最小值 0 仍不命中', () => {
+    const always = miniLoadoutWithLuck([{ symbol: 'BAR', triggerPercent: 100 }]);
+    expect(sampleSpin(always, seqRng([0, 1, 0, 99]))).toEqual(['LUCKY7', 'CHERRY', 'BAR']);
+
+    const never = miniLoadoutWithLuck([{ symbol: 'BAR', triggerPercent: 0 }]);
+    expect(sampleSpin(never, seqRng([0, 1, 0, 0]))).toEqual(['LUCKY7', 'CHERRY', 'LUCKY7']);
   });
 });
 

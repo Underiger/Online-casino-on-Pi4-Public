@@ -17,6 +17,15 @@
  */
 import type { Prisma, PrismaClient } from '@prisma/client';
 import type { Redis } from 'ioredis';
+import { env } from '../../config/env.js';
+import {
+  answerCallbackQuery,
+  getUpdates,
+  resolveMessage,
+  sendApprovalMessage,
+  telegramEnabled,
+  type TelegramCallbackQuery,
+} from '../../integrations/telegram.js';
 import { rngToken } from '../../security/csprng.js';
 import {
   buildOtpAuthUri,
@@ -57,6 +66,8 @@ import type {
   MuteUserRes,
   PlayerSearchQuery,
   ReverifyRes,
+  TelegramReverifyStartRes,
+  TelegramReverifyStatusRes,
   TotpConfirmRes,
   TotpSetupRes,
   ValidateRes,
@@ -68,6 +79,8 @@ import type {
 const REVERIFY_TTL_SECONDS = 600;
 /** TOTP code 防重用記錄壽命（秒） */
 const TOTP_REUSE_TTL_SECONDS = 600;
+/** Telegram 2FA 推播待核准請求壽命（秒）：逾時未回應視為過期，需重新觸發 */
+const TG2FA_PENDING_TTL_SECONDS = 120;
 
 /** 稽核動作碼（AdminAuditLog.action；≤ AUDIT_ACTION_MAX_LENGTH 字元） */
 export const AUDIT_ACTIONS = {
@@ -81,6 +94,8 @@ export const AUDIT_ACTIONS = {
   CREATE_ANNOUNCEMENT: 'CREATE_ANNOUNCEMENT',
   UPDATE_ANNOUNCEMENT: 'UPDATE_ANNOUNCEMENT',
   DELETE_ANNOUNCEMENT: 'DELETE_ANNOUNCEMENT',
+  TELEGRAM_2FA_APPROVED: 'TELEGRAM_2FA_APPROVED',
+  TELEGRAM_2FA_DENIED: 'TELEGRAM_2FA_DENIED',
 } as const;
 
 // ─── Redis 鍵 ─────────────────────────────────────────────────────────────────
@@ -88,6 +103,12 @@ export const AUDIT_ACTIONS = {
 const reverifyKey = (token: string): string => `admin:reverify:${token}`;
 const totpUsedKey = (userId: string, code: string): string => `admin:totp:used:${userId}:${code}`;
 const muteUntilKey = (userId: string): string => `admin:mute:until:${userId}`;
+/** Telegram 2FA 待核准請求記錄（JSON，見 TgReverifyRecord） */
+const tg2faReqKey = (requestId: string): string => `admin:tg2fa:req:${requestId}`;
+/** 該 admin 目前是否有未過期的 pending 請求（值＝requestId）；避免對話框重新掛載時連續推播 */
+const tg2faPendingKey = (adminId: string): string => `admin:tg2fa:pending:${adminId}`;
+/** getUpdates offset 游標：不可用 JS 模組變數——下一輪可能由另一個 cluster worker 進程執行 */
+const TG2FA_OFFSET_KEY = 'admin:tg2fa:offset';
 
 // ─── 自動操作（系統發起）標記 ──────────────────────────────────────────────────
 
@@ -108,6 +129,18 @@ const MUTE_MARKER_BUFFER_SECONDS = 3600;
 export interface AdminServiceLog {
   warn: (obj: unknown, msg?: string) => void;
   info?: (obj: unknown, msg?: string) => void;
+}
+
+/** Telegram 2FA 待核准請求（Redis JSON 落地格式；tg2faReqKey） */
+interface TgReverifyRecord {
+  adminId: string;
+  status: 'pending' | 'approved' | 'denied';
+  /** Telegram 訊息 ID，核准/拒絕後用於改寫原訊息文字 */
+  messageId: number;
+  /** 發起請求時的來源 IP（核准/拒絕落 AdminAuditLog 用——Telegram 端的點擊本身無 IP 可記） */
+  ip: string;
+  /** status==='approved' 時填入 */
+  reverifyToken?: string;
 }
 
 export interface AdminServiceDeps {
@@ -135,6 +168,20 @@ function parseRecoveryCodes(raw: string | null): string[] {
   } catch {
     return [];
   }
+}
+
+/** 解析 tg2faReqKey 的 JSON 落地值；本欄位只由本檔寫入，格式異常一律視為不存在（null） */
+function parseTgRecord(raw: string): TgReverifyRecord | null {
+  try {
+    return JSON.parse(raw) as TgReverifyRecord;
+  } catch {
+    return null;
+  }
+}
+
+/** Asia/Taipei 易讀時間（Telegram 推播訊息用；與專案既有 cron 時區一致） */
+function taipeiTimeString(): string {
+  return new Date().toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', hour12: false });
 }
 
 function toPlayerItem(u: {
@@ -341,6 +388,181 @@ export function createAdminService(deps: AdminServiceDeps) {
     return issueReverifyToken(adminId);
   }
 
+  // ── Telegram 2FA 推播（取代/輔助逐次手動輸入 TOTP） ──────────────────────────────
+
+  /** POST /totp/reverify-telegram：發送 Telegram 核准推播；已有未過期請求則直接回傳同一個 */
+  async function requestTelegramReverify(
+    adminId: string,
+    ip: string,
+  ): Promise<TelegramReverifyStartRes> {
+    if (!telegramEnabled) throw new ForbiddenError('Telegram 2FA 未設定');
+
+    // 已有未過期 pending 請求 → 回傳同一個，不重送訊息（防對話框重複掛載時連續推播炸手機）
+    const existingId = await redis.get(tg2faPendingKey(adminId));
+    if (existingId !== null) {
+      const existingRaw = await redis.get(tg2faReqKey(existingId));
+      const existing = existingRaw !== null ? parseTgRecord(existingRaw) : null;
+      if (existing !== null && existing.status === 'pending') {
+        return { requestId: existingId, expiresIn: TG2FA_PENDING_TTL_SECONDS };
+      }
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: adminId },
+      select: { username: true },
+    });
+    if (user === null) throw new NotFoundError('使用者不存在');
+
+    const requestId = rngToken(24);
+    const text =
+      `🔐 管理後台 2FA 重新驗證請求\n` +
+      `管理員：${user.username}\n` +
+      `來源 IP：${ip}\n` +
+      `時間：${taipeiTimeString()}\n\n` +
+      `請確認是否為本人操作（${Math.floor(TG2FA_PENDING_TTL_SECONDS / 60)} 分鐘內有效）`;
+    const { messageId } = await sendApprovalMessage(text, requestId);
+
+    const record: TgReverifyRecord = { adminId, status: 'pending', messageId, ip };
+    await redis.set(
+      tg2faReqKey(requestId),
+      JSON.stringify(record),
+      'EX',
+      TG2FA_PENDING_TTL_SECONDS,
+    );
+    await redis.set(tg2faPendingKey(adminId), requestId, 'EX', TG2FA_PENDING_TTL_SECONDS);
+
+    return { requestId, expiresIn: TG2FA_PENDING_TTL_SECONDS };
+  }
+
+  /** GET /totp/reverify-telegram/:requestId：前端輪詢用 */
+  async function getTelegramReverifyStatus(
+    adminId: string,
+    requestId: string,
+  ): Promise<TelegramReverifyStatusRes> {
+    const raw = await redis.get(tg2faReqKey(requestId));
+    if (raw === null) return { status: 'expired' };
+
+    const record = parseTgRecord(raw);
+    if (record === null) return { status: 'expired' };
+    if (record.adminId !== adminId) throw new NotFoundError('請求不存在');
+
+    return {
+      status: record.status,
+      ...(record.reverifyToken !== undefined ? { reverifyToken: record.reverifyToken } : {}),
+    };
+  }
+
+  /**
+   * Telegram callback_query 處理（pollTelegramUpdates 逐筆呼叫）：
+   * 來源 chat id 不符 → 忽略（不洩漏任何狀態）；requestId 不存在/已處理過 → 僅 ack
+   * （idempotent，吸收 Telegram 重送或使用者雙擊）；否則依 approve/deny 轉移狀態
+   * （核准額外發 reverifyToken），寫 AdminAuditLog，並改寫原訊息文字。
+   */
+  async function processTelegramCallback(callbackQuery: TelegramCallbackQuery): Promise<void> {
+    if (String(callbackQuery.from.id) !== env.TELEGRAM_ADMIN_CHAT_ID) {
+      log.warn({ fromId: callbackQuery.from.id }, 'telegram-2fa: 非授權來源 callback，忽略');
+      return;
+    }
+
+    const match = /^tg2fa:(?<action>approve|deny):(?<requestId>.+)$/.exec(callbackQuery.data ?? '');
+    const action = match?.groups?.action;
+    const requestId = match?.groups?.requestId;
+    if (action === undefined || requestId === undefined) return;
+
+    const raw = await redis.get(tg2faReqKey(requestId));
+    if (raw === null) return; // 已過期：無 messageId 可改，靜默忽略
+
+    const record = parseTgRecord(raw);
+    if (record === null) return;
+
+    if (record.status !== 'pending') {
+      // 重放 / 雙擊：已處理過，僅 ack 不重複動作（不重複核發 token、不重複寫稽核）
+      try {
+        await answerCallbackQuery(callbackQuery.id, '此請求已處理');
+      } catch (err) {
+        log.warn({ err: (err as Error).message }, 'telegram-2fa: answerCallbackQuery 失敗');
+      }
+      return;
+    }
+
+    if (action === 'approve') {
+      const { reverifyToken } = await issueReverifyToken(record.adminId);
+      const updated: TgReverifyRecord = { ...record, status: 'approved', reverifyToken };
+      await redis.set(
+        tg2faReqKey(requestId),
+        JSON.stringify(updated),
+        'EX',
+        TG2FA_PENDING_TTL_SECONDS,
+      );
+      await prisma.$transaction(async (tx) => {
+        await writeAudit(tx, {
+          adminId: record.adminId,
+          action: AUDIT_ACTIONS.TELEGRAM_2FA_APPROVED,
+          targetUserId: record.adminId,
+          before: {},
+          after: { requestId },
+          ip: record.ip,
+        });
+      });
+      // 核心狀態（token 核發 + 稽核）已落地；以下純屬手機端視覺回饋，失敗不影響功能
+      try {
+        await resolveMessage(record.messageId, `✅ 已於 ${taipeiTimeString()} 核准`);
+        await answerCallbackQuery(callbackQuery.id, '已核准');
+      } catch (err) {
+        log.warn(
+          { err: (err as Error).message },
+          'telegram-2fa: 核准後訊息更新失敗（token 已核發，不影響功能）',
+        );
+      }
+      return;
+    }
+
+    const updated: TgReverifyRecord = { ...record, status: 'denied' };
+    await redis.set(
+      tg2faReqKey(requestId),
+      JSON.stringify(updated),
+      'EX',
+      TG2FA_PENDING_TTL_SECONDS,
+    );
+    await prisma.$transaction(async (tx) => {
+      await writeAudit(tx, {
+        adminId: record.adminId,
+        action: AUDIT_ACTIONS.TELEGRAM_2FA_DENIED,
+        targetUserId: record.adminId,
+        before: {},
+        after: { requestId },
+        ip: record.ip,
+      });
+    });
+    try {
+      await resolveMessage(record.messageId, `❌ 已於 ${taipeiTimeString()} 拒絕`);
+      await answerCallbackQuery(callbackQuery.id, '已拒絕');
+    } catch (err) {
+      log.warn({ err: (err as Error).message }, 'telegram-2fa: 拒絕後訊息更新失敗');
+    }
+  }
+
+  /** telegram-2fa-poll.job 的唯一入口：讀 offset → getUpdates → 逐筆處理 → 寫回新 offset */
+  async function pollTelegramUpdates(): Promise<void> {
+    const offsetRaw = await redis.get(TG2FA_OFFSET_KEY);
+    const parsedOffset = offsetRaw !== null ? Number(offsetRaw) : 0;
+    const offset = Number.isSafeInteger(parsedOffset) ? parsedOffset : 0;
+
+    const updates = await getUpdates(offset);
+
+    let maxUpdateId = -1;
+    for (const update of updates) {
+      if (update.update_id > maxUpdateId) maxUpdateId = update.update_id;
+      if (update.callback_query !== undefined) {
+        await processTelegramCallback(update.callback_query);
+      }
+    }
+
+    if (maxUpdateId >= 0) {
+      await redis.set(TG2FA_OFFSET_KEY, String(maxUpdateId + 1));
+    }
+  }
+
   /** GET /me：回傳當前管理員概要（前端據此決定顯示綁定或驗證流程） */
   async function getMe(adminId: string): Promise<AdminMeRes> {
     const user = await prisma.user.findUnique({
@@ -353,6 +575,7 @@ export function createAdminService(deps: AdminServiceDeps) {
       username: user.username,
       role: user.role,
       totpEnabled: user.totpEnabled,
+      telegramEnabled,
     };
   }
 
@@ -958,6 +1181,10 @@ export function createAdminService(deps: AdminServiceDeps) {
     validate2fa,
     reverify,
     checkReverifyToken,
+    requestTelegramReverify,
+    getTelegramReverifyStatus,
+    processTelegramCallback,
+    pollTelegramUpdates,
     getMe,
     // 玩家
     listPlayers,
